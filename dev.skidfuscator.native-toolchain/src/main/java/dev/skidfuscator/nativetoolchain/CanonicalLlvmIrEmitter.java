@@ -122,6 +122,7 @@ public final class CanonicalLlvmIrEmitter implements LlvmIrEmitter {
                     .append("skid.semantic.").append(helper).append(".v1")
                     .append("\"(ptr, ptr, ptr)\n");
         }
+        output.append("declare i32 @\"skid.semantic.reference_equals.v1\"(ptr, ptr, ptr)\n");
         output.append(stringConstants.helperDeclaration());
         stringConstants.emitGlobals(output);
         semanticSites.emitDeclarations(output);
@@ -319,6 +320,25 @@ public final class CanonicalLlvmIrEmitter implements LlvmIrEmitter {
             return dispatchIndex;
         }
 
+        if (operation.opcode() == NativeOpcode.SHL || operation.opcode() == NativeOpcode.ASHR
+                || operation.opcode() == NativeOpcode.LSHR) {
+            emitShift(function, operation, aliases, output);
+            return dispatchIndex;
+        }
+        if ((operation.opcode() == NativeOpcode.ICMP_EQ || operation.opcode() == NativeOpcode.ICMP_NE)
+                && operation.operands().get(0).type().isReferenceLike()) {
+            if (!function.requiresSemanticContext()) throw unsupported(function, "reference equality without JNI context");
+            final String status = valueName(operation.id() + ".reference.identity");
+            output.append("  ").append(status)
+                    .append(" = call i32 @\"skid.semantic.reference_equals.v1\"(ptr ")
+                    .append(semanticContextName()).append(", ")
+                    .append(typedOperand(function, operation.operands().get(0), aliases)).append(", ")
+                    .append(typedOperand(function, operation.operands().get(1), aliases)).append(")\n");
+            output.append("  ").append(valueName(operation.id())).append(" = icmp ")
+                    .append(operation.opcode() == NativeOpcode.ICMP_EQ ? "ne" : "eq")
+                    .append(" i32 ").append(status).append(", 0\n");
+            return dispatchIndex;
+        }
         output.append("  ").append(valueName(operation.id())).append(" = ");
         final List<NativeOperand> operands = operation.operands();
         switch (operation.opcode()) {
@@ -557,6 +577,29 @@ public final class CanonicalLlvmIrEmitter implements LlvmIrEmitter {
         }
         final String value = operation.attributes().get("value");
         stringConstants.emitCall(value, semanticContextName(), output);
+    }
+
+    private void emitShift(final NativeFunction function, final NativeInstruction.Operation operation,
+                           final Map<String, NativeOperand> aliases, final StringBuilder output) {
+        final NativeOperand amount = operation.operands().get(1);
+        final NativeType.Primitive resultType = (NativeType.Primitive) operation.type();
+        final NativeType.Primitive amountType = (NativeType.Primitive) amount.type();
+        final String masked = valueName(operation.id() + ".shift.mask");
+        output.append("  ").append(masked).append(" = and ").append(type(amount.type())).append(' ')
+                .append(operand(function, amount, aliases)).append(", ").append(resultType.bits() - 1).append('\n');
+        String distance = masked;
+        if (amountType.bits() != resultType.bits()) {
+            distance = valueName(operation.id() + ".shift.width");
+            output.append("  ").append(distance).append(" = ")
+                    .append(amountType.bits() < resultType.bits() ? "zext " : "trunc ")
+                    .append(type(amount.type())).append(' ').append(masked).append(" to ")
+                    .append(type(resultType)).append('\n');
+        }
+        output.append("  ").append(valueName(operation.id())).append(" = ")
+                .append(operation.opcode().name().toLowerCase(java.util.Locale.ROOT)).append(' ')
+                .append(type(resultType)).append(' ')
+                .append(operand(function, operation.operands().get(0), aliases))
+                .append(", ").append(distance).append('\n');
     }
 
     private void emitBinary(
@@ -997,9 +1040,14 @@ public final class CanonicalLlvmIrEmitter implements LlvmIrEmitter {
             final NativeBlock source = blocks.get(sourceBlock);
             if (source == null) return List.of();
             final List<String> result = new ArrayList<>();
-            if (source.terminator().orElseThrow().successors().contains(targetBlock)) {
+            final NativeTerminator terminator = source.terminator().orElseThrow();
+            // A PHI has one value for every LLVM edge, not just each unique block.
+            final long normalEdges = terminator instanceof NativeTerminator.Switch switching
+                    ? java.util.stream.Stream.concat(switching.cases().values().stream(),
+                            java.util.stream.Stream.of(switching.defaultTarget())).filter(targetBlock::equals).count()
+                    : terminator.successors().stream().filter(targetBlock::equals).count();
+            for (long edge = 0; edge < normalEdges; edge++)
                 result.add(segmentLabel(source, operationDispatchCounts.get(sourceBlock)));
-            }
             if (source.exceptionEdges().stream().anyMatch(edge -> edge.handlerBlock().equals(targetBlock))) {
                 final int availableFrom = incoming instanceof NativeOperand.Value value
                         ? exceptionAvailability.get(sourceBlock).getOrDefault(value.id(), 0)
@@ -1009,11 +1057,12 @@ public final class CanonicalLlvmIrEmitter implements LlvmIrEmitter {
                             + ((NativeOperand.Value) incoming).id()
                             + " is not defined on every exception edge from block " + sourceBlock);
                 }
-                for (int index = 0; index < totalDispatchCounts.get(sourceBlock); index++) {
-                    result.add(segmentLabel(source, index));
-                }
+                final long exceptionEdges = orderedExceptionEdges(source).stream()
+                        .filter(edge -> edge.handlerBlock().equals(targetBlock)).count();
+                for (int index = 0; index < totalDispatchCounts.get(sourceBlock); index++)
+                    for (long edge = 0; edge < exceptionEdges; edge++) result.add(segmentLabel(source, index));
             }
-            return result.stream().distinct().toList();
+            return List.copyOf(result);
         }
     }
 

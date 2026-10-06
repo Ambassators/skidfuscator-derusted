@@ -396,6 +396,11 @@ public class InterproceduralTransformer extends AbstractTransformer {
                         };
                     }
 
+                    if (injected && skidfuscator.getConfig().getNativeConfig()
+                            .getThreadedKeyConfig().isEnabled()) {
+                        return skidfuscator.getNativeThreadedKeys().reconstruct(
+                                skidMethodNode, false, methodPredicate.getPrivate(), seed, expr.get(vertex));
+                    }
                     return NumberManager.encrypt(
                             methodPredicate.getPrivate(),
                             seed,
@@ -437,6 +442,12 @@ public class InterproceduralTransformer extends AbstractTransformer {
                     };
                 }
 
+                if (injected && skidfuscator.getConfig().getNativeConfig()
+                        .getThreadedKeyConfig().isEnabled()) {
+                    return skidfuscator.getNativeThreadedKeys().reconstruct(
+                            skidMethodNode, true, methodPredicate.getPrivateLong(), startingLong,
+                            exprWide.getWide(vertex));
+                }
                 return NumberManager.encryptLong(
                         methodPredicate.getPrivateLong(),
                         startingLong,

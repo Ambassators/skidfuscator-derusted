@@ -17,9 +17,11 @@ import java.util.Set;
 /** Applies selection precedence and its documented strict/warn behavior. */
 public final class NativeCompilationPlanner {
     private final NativeCandidateSelector selector;
+    private final NativeConfig config;
 
     public NativeCompilationPlanner(final NativeConfig config) {
         this.selector = new NativeCandidateSelector(Objects.requireNonNull(config, "config"));
+        this.config = config;
     }
 
     public NativeCompilationPlan plan(final Collection<? extends MethodNode> methods) {
@@ -55,6 +57,7 @@ public final class NativeCompilationPlanner {
                     "Explicit native selection is unsupported:\n - " + String.join("\n - ", strictFailures)
             );
         }
+        NativeJavaCopyPlanner.reserve(config, methods, candidates);
         return new NativeCompilationPlan(candidates, skipped);
     }
 

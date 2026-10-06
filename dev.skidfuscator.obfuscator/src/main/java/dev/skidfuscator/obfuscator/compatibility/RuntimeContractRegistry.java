@@ -190,6 +190,10 @@ public final class RuntimeContractRegistry {
                 if (jnaLibrary && (method.access & Opcodes.ACC_ABSTRACT) != 0) pin(owner, method, "JNA export ABI");
                 if (jnaStructure && (visible(method.access) || method.name.equals("getFieldOrder"))) pin(owner, method, "JNA structure ABI");
                 if (protobuf && visible(method.access)) pin(owner, method, "protobuf runtime/public factory ABI");
+                // MessageLiteToString enumerates declared instance setters of every visibility
+                // to decide which public getters represent printable fields.
+                if (protobuf && (method.access & Opcodes.ACC_STATIC) == 0 && method.name.startsWith("set"))
+                    pin(owner, method, "protobuf reflective setter discovery");
                 if (api && visible(method.access)) pin(owner, method, "configured exported API");
                 if (serializationHook(method)) pin(owner, method, "Java serialization hook");
             }
@@ -370,8 +374,46 @@ public final class RuntimeContractRegistry {
         }
     }
 
+    /**
+     * Records only the implementation-kind transition performed by a successful
+     * native commit. The Java owner/name/descriptor and caller-visible flags must
+     * still be identical; arbitrary pass changes to ACC_NATIVE remain forbidden.
+     */
+    public void recordCommittedNativeImplementation(MethodNode method) {
+        Objects.requireNonNull(method, "method");
+        final MethodContract contract = methods.get(method);
+        if (contract == null) return;
+        if (!contract.owner.methods.contains(method)
+                || !contract.name.equals(method.name) || !contract.desc.equals(method.desc)
+                || (contract.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) != 0
+                || (method.access & Opcodes.ACC_NATIVE) == 0
+                || (method.access & METHOD_ABI) != (contract.access | Opcodes.ACC_NATIVE)
+                || method.instructions.size() != 0) {
+            throw new IllegalStateException("Native commit changed a caller-facing ABI: "
+                    + contract.owner.name + "#" + contract.name + contract.desc);
+        }
+        methods.put(method, new MethodContract(contract.owner, method, contract.name,
+                contract.desc, contract.access | Opcodes.ACC_NATIVE, contract.reasons));
+    }
+
     public boolean isMethodContract(MethodNode method) { return methods.containsKey(method); }
     public boolean isFieldContract(FieldNode field) { return fields.containsKey(field); }
+
+    /** A proven native-storage transition may replace ordinary symbolic/public field pins. */
+    public boolean isNativeStorageFieldContract(FieldNode field) {
+        FieldContract c = fields.get(field);
+        return c != null && c.reasons.stream().anyMatch(reason ->
+                !reason.equals("symbolic field reference")
+                        && !reason.equals("public/annotated/native/serialization field"));
+    }
+
+    public void recordCommittedNativeFieldStorage(FieldNode field) {
+        if (isNativeStorageFieldContract(field))
+            throw new IllegalStateException("Native storage cannot remove a required field contract");
+        // The field planner separately proves annotations, JNA, serialization, API,
+        // surviving bytecode and final native accesses before this committed transition.
+        fields.remove(field);
+    }
     public boolean isAnnotationElementContract(String descriptor, String element) {
         if (descriptor == null || !descriptor.startsWith("L") || !descriptor.endsWith(";")) return false;
         String owner = descriptor.substring(1, descriptor.length() - 1);

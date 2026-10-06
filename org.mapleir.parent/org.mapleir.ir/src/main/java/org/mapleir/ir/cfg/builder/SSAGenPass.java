@@ -792,31 +792,9 @@ public class SSAGenPass extends ControlFlowGraphBuilder.BuilderPass {
 		List<ExceptionRange<BasicBlock>> dr = db.cfg.getProtectingRanges(db);
 		List<ExceptionRange<BasicBlock>> ur = ub.cfg.getProtectingRanges(ub);
 		
-		int drs = dr.size(), urs = ur.size();
-		
-		boolean transferable = false;
-		
-		if(drs > 0) {
-			if(urs == 0) {
-				// we can clone the range information.
-//				for(ExceptionRange<BasicBlock> e : dr) {
-//					e.addVertex(ub);
-//					builder.graph.addEdge(ub, new TryCatchEdge<>(ub, e));
-//				}
-//				
-//				transferable = true;
-			} else {
-				dr.removeAll(ur);
-				
-				if(dr.size() == 0) {
-					transferable = true;
-				}
-			}
-		} else if(urs == 0) {
-			transferable = true;
-		}
-		
-		return transferable;
+        // Extra or reordered handlers alter exception semantics just as much
+        // as missing handlers. Propagation must preserve the exact ordered set.
+        return dr.equals(ur);
 	}
 
 
@@ -907,7 +885,8 @@ public class SSAGenPass extends ControlFlowGraphBuilder.BuilderPass {
 								from = pool.defs.get(value.getSource());
 							}
 							
-							if(!value.hasConstraints() || (canTransferHandlers(def.getBlock(), var.getBlock()) && value.canPropagate(from, var.getRootParent(), var, false))) {
+							if(canTransferHandlers(from.getBlock(), var.getBlock())
+                                    && (!value.hasConstraints() || value.canPropagate(from, var.getRootParent(), var, false))) {
 								if(shouldCopy(rval)) {
 									e = rval;
 								} else {
@@ -1301,9 +1280,13 @@ public class SSAGenPass extends ControlFlowGraphBuilder.BuilderPass {
 //						System.out.println(use);
 						
 						/* phi var*/
-						Expr rhs = def.getExpression();
-						
-						if(use.getParent() != null) {
+                        Expr rhs = def.getExpression();
+                        // Keep observable evaluations at their original statement
+                        // and exception scope. ALLOC_OBJ alone is still eligible
+                        // for the mandatory new/constructor fusion path.
+                        if (rhs.getOpcode() != Opcode.ALLOC_OBJ && ConstraintUtil.isUncopyable(rhs)) continue;
+
+                        if(use.getParent() != null) {
 							if(canTransferHandlers(def.getBlock(), use.getBlock()) && val.canPropagate(def, use.getRootParent(), use, false)) {
 								CodeUnit parent = use.getParent();
 								if(rhs.getOpcode() == Opcode.CATCH) {

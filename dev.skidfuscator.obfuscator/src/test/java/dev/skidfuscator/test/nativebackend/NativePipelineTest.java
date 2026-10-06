@@ -95,6 +95,16 @@ class NativePipelineTest {
         SkidApplicationClassSource source = mock(SkidApplicationClassSource.class);
         SkidMethodNode method = method();
         method.node.access = Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC;
+        // A void no-op now lowers through the isolated SSA builder. Use an actual
+        // unsupported array-owner call to exercise rejection before toolchain setup.
+        method.node.desc = "([I)Ljava/lang/Object;";
+        method.node.instructions.clear();
+        method.node.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 0));
+        method.node.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL, "[I", "clone", "()Ljava/lang/Object;", false));
+        method.node.instructions.add(new org.objectweb.asm.tree.InsnNode(Opcodes.ARETURN));
+        method.node.maxLocals = 1;
+        method.node.maxStack = 1;
         Path compiler = Files.createFile(temporaryDirectory.resolve("zig.exe"));
         when(skidfuscator.getConfig()).thenReturn(config("""
                 native {
@@ -115,8 +125,8 @@ class NativePipelineTest {
                 NativeBackendUnavailableException.class,
                 () -> new NativePipeline(skidfuscator).prepare()
         );
-        assertTrue(failure.getMessage().contains("None of the 1 selected method(s)"));
-        assertTrue(failure.getMessage().contains("descriptor must be ()Ljava/lang/String;"));
+        assertTrue(failure.getMessage().contains("None of the 1 selected method(s)"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Rejections:"), failure.getMessage());
         assertTrue((method.node.access & Opcodes.ACC_NATIVE) == 0);
         assertTrue(method.node.instructions.size() > 0);
     }
@@ -184,6 +194,76 @@ class NativePipelineTest {
         assertTrue(skidfuscator.isNativeCandidate(reservedGroup));
         assertFalse(skidfuscator.isNativeCandidate(ordinary));
         assertFalse(skidfuscator.isNativeCandidate(ordinaryGroup));
+    }
+
+    @Test
+    void keyOnlyRejectsMissingThreadedSitesWithoutSelectingApplicationBodies() {
+        final Skidfuscator skid = mock(Skidfuscator.class);
+        final SkidfuscatorSession session = mock(SkidfuscatorSession.class);
+        final Hierarchy hierarchy = mock(Hierarchy.class);
+        final SkidApplicationClassSource source = mock(SkidApplicationClassSource.class);
+        final SkidMethodNode application = method();
+        when(skid.getConfig()).thenReturn(config("""
+                native {
+                  enabled = true
+                  "include" = ["method{run}"]
+                  threadedKey { enabled = true, only = true, mode = VM }
+                }
+                """));
+        when(skid.getSession()).thenReturn(session);
+        when(skid.getHierarchy()).thenReturn(hierarchy);
+        when(skid.getClassSource()).thenReturn(source);
+        when(hierarchy.getMethods()).thenReturn(List.of(application));
+        when(source.isApplicationClass("example/Owner")).thenReturn(true);
+        when(skid.getNativeThreadedKeys()).thenReturn(
+                new dev.skidfuscator.obfuscator.nativebackend.key.NativeThreadedKeyRegistry(skid));
+        final NativePipeline pipeline = new NativePipeline(skid);
+        final NativeCompilationPlan reservation = pipeline.reserve();
+        assertTrue(reservation.candidates().isEmpty());
+        final var failure = assertThrows(NativeSelectionException.class,
+                () -> pipeline.prepare(reservation));
+        assertTrue(failure.getMessage().contains("no eligible threaded seed sites"));
+        assertFalse(application.isNative());
+        assertEquals(1, application.node.instructions.size());
+    }
+
+    @Test
+    void keyOnlyCannotFallBackToJavaWhenTheAuthenticatedToolchainIsMissing() throws IOException {
+        final Skidfuscator skid = mock(Skidfuscator.class);
+        final SkidfuscatorSession session = mock(SkidfuscatorSession.class);
+        final Hierarchy hierarchy = mock(Hierarchy.class);
+        final SkidApplicationClassSource source = mock(SkidApplicationClassSource.class);
+        final SkidMethodNode application = method();
+        final var contents = new org.topdank.byteengineer.commons.data.JarContents();
+        when(skid.getConfig()).thenReturn(config("""
+                native {
+                  enabled = true
+                  targets = ["windows-x86_64"]
+                  toolchain.delivery = EXTERNAL
+                  threadedKey { enabled = true, only = true, mode = VM }
+                }
+                """));
+        when(skid.getSession()).thenReturn(session);
+        when(session.getNativeToolchainPath()).thenReturn(
+                Files.createDirectory(temporaryDirectory.resolve("missing-toolchain")).toFile());
+        when(skid.getHierarchy()).thenReturn(hierarchy);
+        when(skid.getClassSource()).thenReturn(source);
+        when(skid.getJarContents()).thenReturn(contents);
+        when(hierarchy.getMethods()).thenReturn(List.of(application));
+        when(source.isApplicationClass("example/Owner")).thenReturn(true);
+        final var keys = new dev.skidfuscator.obfuscator.nativebackend.key.NativeThreadedKeyRegistry(skid);
+        when(skid.getNativeThreadedKeys()).thenReturn(keys);
+        keys.reconstruct(application, false, 73, 27,
+                new org.mapleir.ir.code.expr.ConstantExpr(27, org.objectweb.asm.Type.INT_TYPE));
+        final NativePipeline pipeline = new NativePipeline(skid);
+        final NativeCompilationPlan reservation = pipeline.reserve();
+        assertTrue(reservation.candidates().isEmpty());
+        assertThrows(NativeBackendUnavailableException.class, () -> pipeline.prepare(reservation));
+        assertFalse(application.isNative());
+        assertEquals(1, application.node.instructions.size());
+        assertTrue(contents.getClassContents().isEmpty());
+        assertTrue(contents.getResourceContents().isEmpty());
+        assertFalse(keys.seal().get(0).method().isNative());
     }
 
     private static DefaultSkidConfig config(final String hocon) {

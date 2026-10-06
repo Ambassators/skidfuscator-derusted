@@ -26,6 +26,21 @@ public final class NativeToolchainConfig extends DefaultConfig {
         return getString("path", "");
     }
 
+    /** Explicit opt-in for a locally built, unsigned, AOT-only developer toolchain. */
+    public boolean isDevelopmentEnabled() {
+        return getBoolean("development.enabled", false);
+    }
+
+    /** Absolute path to the local skidllvm executable; never an automatic fallback. */
+    public String getDevelopmentPath() {
+        return getString("development.path", "");
+    }
+
+    /** Retains compiler diagnostics only when explicitly requested for local development. */
+    public boolean isDevelopmentKeepWorkDirectory() {
+        return getBoolean("development.keepWorkDirectory", false);
+    }
+
     public String getVersion() {
         return getString("version", DEFAULT_VERSION);
     }

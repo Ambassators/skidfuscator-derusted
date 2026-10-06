@@ -27,12 +27,14 @@ public final class NativeConfig extends DefaultConfig {
 
     private final NativeToolchainConfig toolchainConfig;
     private final NativeVmConfig vmConfig;
+    private final NativeThreadedKeyConfig threadedKeyConfig;
 
     public NativeConfig(final Config config, final String path) {
         super(config, path);
         final String childPrefix = path.isEmpty() ? "" : path + ".";
         this.toolchainConfig = new NativeToolchainConfig(config, childPrefix + "toolchain");
         this.vmConfig = new NativeVmConfig(config, childPrefix + "vm");
+        this.threadedKeyConfig = new NativeThreadedKeyConfig(config, childPrefix + "threadedKey");
     }
 
     public boolean isEnabled() {
@@ -49,6 +51,42 @@ public final class NativeConfig extends DefaultConfig {
 
     public List<String> getIncludes() {
         return immutableCopy(getStringList("include", Collections.emptyList()));
+    }
+
+    /** Explicitly permits an AOT copy while retaining the original Java implementation. */
+    public List<String> getJavaCopyIncludes() {
+        return immutableCopy(getStringList("javaCopies.include", Collections.emptyList()));
+    }
+
+    public List<String> getJavaCopyExemptions() {
+        return immutableCopy(getStringList("javaCopies.exempt", Collections.emptyList()));
+    }
+
+    /** Reviewed closed-world scope: private entries in this scope may be removed. */
+    public List<String> getPrunePrivateIncludes() {
+        return immutableCopy(getStringList("prunePrivate.include", Collections.emptyList()));
+    }
+
+    public List<String> getPrunePrivateKeeps() {
+        return immutableCopy(getStringList("prunePrivate.keep", Collections.emptyList()));
+    }
+
+    /** Explicit closed-world review permits removal regardless of Java visibility. */
+    public List<String> getPruneEntryIncludes() {
+        return immutableCopy(getStringList("pruneEntries.include", Collections.emptyList()));
+    }
+
+    public List<String> getPruneEntryKeeps() {
+        return immutableCopy(getStringList("pruneEntries.keep", Collections.emptyList()));
+    }
+
+    /** Opt-in reviewed field storage; include expressions match original class names. */
+    public boolean isNativeFieldStorageEnabled() { return getBoolean("fields.enabled", false); }
+    public List<String> getNativeFieldIncludes() {
+        return immutableCopy(getStringList("fields.include", Collections.emptyList()));
+    }
+    public List<String> getNativeFieldKeeps() {
+        return immutableCopy(getStringList("fields.keep", Collections.emptyList()));
     }
 
     @Override
@@ -105,6 +143,10 @@ public final class NativeConfig extends DefaultConfig {
 
     public NativeVmConfig getVmConfig() {
         return vmConfig;
+    }
+
+    public NativeThreadedKeyConfig getThreadedKeyConfig() {
+        return threadedKeyConfig;
     }
 
     private static <T> List<T> immutableCopy(final List<T> values) {

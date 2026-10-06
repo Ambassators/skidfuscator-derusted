@@ -35,6 +35,9 @@ public record VmProtectionSettings(
         if (delayedHaltMinimumMillis < 0 || delayedHaltMinimumMillis > 86_400_000) {
             throw new IllegalArgumentException("delayedHaltMinimumMillis must be in 0..86400000");
         }
+        if (response == Response.DELAYED_HALT && delayedHaltMinimumMillis == 0) {
+            throw new IllegalArgumentException("DELAYED_HALT requires a positive halt delay");
+        }
         if (response != Response.DELAYED_HALT && delayedHaltMinimumMillis != 0) {
             throw new IllegalArgumentException("A halt delay is valid only for DELAYED_HALT");
         }

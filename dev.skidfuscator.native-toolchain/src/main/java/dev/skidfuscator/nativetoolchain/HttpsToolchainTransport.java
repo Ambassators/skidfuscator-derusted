@@ -16,13 +16,21 @@ import java.util.Objects;
 public final class HttpsToolchainTransport implements ToolchainTransport {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration REQUEST_TIMEOUT = Duration.ofMinutes(5);
-    private final HttpClient client;
+    private HttpClient client;
 
     public HttpsToolchainTransport() {
-        this(HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build());
+        // File mirrors and authenticated cache operations must not initialize
+        // network selectors, sockets, or HTTP worker threads.
+    }
+
+    private synchronized HttpClient client() {
+        if (client == null) {
+            client = HttpClient.newBuilder()
+                    .connectTimeout(CONNECT_TIMEOUT)
+                    .followRedirects(HttpClient.Redirect.NEVER)
+                    .build();
+        }
+        return client;
     }
 
     HttpsToolchainTransport(final HttpClient client) {
@@ -50,7 +58,7 @@ public final class HttpsToolchainTransport implements ToolchainTransport {
                 .build();
         final HttpResponse<InputStream> response;
         try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            response = client().send(request, HttpResponse.BodyHandlers.ofInputStream());
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while downloading SkidLLVM", interrupted);

@@ -1,0 +1,104 @@
+Picked up JAVA_TOOL_OPTIONS: -Djdk.net.unixdomain.tmpdir=C:/skid-nonexistent-uds/fallback -Djava.net.preferIPv4Stack=true
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.10/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+Configuration on demand is an incubating feature.
+> Task :ir:processResources NO-SOURCE
+> Task :modasm:processResources NO-SOURCE
+> Task :ir.printer:processResources NO-SOURCE
+> Task :service-framework-api:processResources NO-SOURCE
+> Task :app-services:processResources NO-SOURCE
+> Task :pure-analysis:processResources NO-SOURCE
+> Task :obfuscator:assembleJasm NO-SOURCE
+> Task :flowgraph:processResources NO-SOURCE
+> Task :stdlib:processResources NO-SOURCE
+> Task :service-framework-impl:processResources NO-SOURCE
+> Task :service-util:processResources NO-SOURCE
+> Task :topdank-services:processResources NO-SOURCE
+> Task :commons:processResources UP-TO-DATE
+> Task :native-toolchain:processResources UP-TO-DATE
+> Task :obfuscator:processResources UP-TO-DATE
+> Task :main:processResources UP-TO-DATE
+> Task :native-toolchain:processTestResources NO-SOURCE
+> Task :obfuscator:assembleTestJasm UP-TO-DATE
+> Task :annotations:compileJava UP-TO-DATE
+> Task :property-framework:compileJava UP-TO-DATE
+> Task :sdk:compileJava UP-TO-DATE
+> Task :native-ir:compileJava UP-TO-DATE
+> Task :dot4j:compileJava UP-TO-DATE
+> Task :native-ir:processResources NO-SOURCE
+> Task :annotations:processResources NO-SOURCE
+> Task :annotations:classes UP-TO-DATE
+> Task :native-ir:classes UP-TO-DATE
+> Task :property-framework:processResources NO-SOURCE
+> Task :dot4j:processResources NO-SOURCE
+> Task :property-framework:classes UP-TO-DATE
+> Task :sdk:processResources NO-SOURCE
+> Task :sdk:classes UP-TO-DATE
+> Task :native-ir:jar UP-TO-DATE
+> Task :annotations:jar UP-TO-DATE
+> Task :dot4j:classes UP-TO-DATE
+> Task :dot4j:jar UP-TO-DATE
+> Task :property-framework:jar UP-TO-DATE
+> Task :sdk:jar UP-TO-DATE
+> Task :service-framework-api:compileJava UP-TO-DATE
+> Task :service-framework-api:classes UP-TO-DATE
+> Task :obfuscator:processTestResources UP-TO-DATE
+> Task :service-framework-api:jar UP-TO-DATE
+> Task :native-toolchain:compileJava UP-TO-DATE
+> Task :native-toolchain:classes UP-TO-DATE
+> Task :stdlib:compileJava UP-TO-DATE
+> Task :stdlib:classes UP-TO-DATE
+> Task :native-toolchain:jar UP-TO-DATE
+> Task :stdlib:jar UP-TO-DATE
+> Task :service-framework-impl:compileJava UP-TO-DATE
+> Task :service-framework-impl:classes UP-TO-DATE
+> Task :service-framework-impl:jar UP-TO-DATE
+> Task :service-util:compileJava UP-TO-DATE
+> Task :service-util:classes UP-TO-DATE
+> Task :modasm:compileJava UP-TO-DATE
+> Task :modasm:classes UP-TO-DATE
+> Task :service-util:jar UP-TO-DATE
+> Task :modasm:jar UP-TO-DATE
+> Task :flowgraph:compileJava UP-TO-DATE
+> Task :native-toolchain:compileTestJava UP-TO-DATE
+> Task :flowgraph:classes UP-TO-DATE
+> Task :native-toolchain:testClasses UP-TO-DATE
+> Task :flowgraph:jar UP-TO-DATE
+> Task :native-toolchain:test UP-TO-DATE
+> Task :topdank-services:compileJava UP-TO-DATE
+> Task :topdank-services:classes UP-TO-DATE
+> Task :topdank-services:jar UP-TO-DATE
+> Task :app-services:compileJava UP-TO-DATE
+> Task :app-services:classes UP-TO-DATE
+> Task :app-services:jar UP-TO-DATE
+> Task :pure-analysis:compileJava UP-TO-DATE
+> Task :pure-analysis:classes UP-TO-DATE
+> Task :pure-analysis:jar UP-TO-DATE
+> Task :ir:compileJava UP-TO-DATE
+> Task :ir:classes UP-TO-DATE
+> Task :ir:jar UP-TO-DATE
+> Task :ir.printer:compileJava UP-TO-DATE
+> Task :ir.printer:classes UP-TO-DATE
+> Task :ir.printer:jar UP-TO-DATE
+> Task :main:compileJava UP-TO-DATE
+> Task :main:classes UP-TO-DATE
+> Task :main:jar UP-TO-DATE
+> Task :commons:compileJava UP-TO-DATE
+> Task :commons:classes UP-TO-DATE
+> Task :commons:jar UP-TO-DATE
+> Task :obfuscator:compileJava UP-TO-DATE
+> Task :obfuscator:classes UP-TO-DATE
+> Task :obfuscator:compileTestJava
+> Task :obfuscator:testClasses
+
+> Task :obfuscator:test
+Picked up JAVA_TOOL_OPTIONS: -Djdk.net.unixdomain.tmpdir=C:/skid-nonexistent-uds/fallback -Djava.net.preferIPv4Stack=true
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.10/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 46s
+49 actionable tasks: 2 executed, 47 up-to-date

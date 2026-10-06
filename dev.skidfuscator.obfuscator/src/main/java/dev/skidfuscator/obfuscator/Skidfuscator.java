@@ -171,6 +171,8 @@ public class Skidfuscator {
     private final Set<String> nativeReferencedMembers = new HashSet<>();
     private final Set<String> nativeGeneratedClasses = new HashSet<>();
     private final Set<String> nativeGeneratedMethods = new HashSet<>();
+    private final dev.skidfuscator.obfuscator.nativebackend.key.NativeThreadedKeyRegistry nativeThreadedKeys =
+            new dev.skidfuscator.obfuscator.nativebackend.key.NativeThreadedKeyRegistry(this);
 
     @Setter
     private transient SkidClassNode factoryNode;
@@ -403,7 +405,8 @@ public class Skidfuscator {
                 SkidMethodNode mn = (SkidMethodNode) e.getKey();
                 ControlFlowGraph cfg = e.getValue();
 
-                if (mn.owner.isAnnoyingVersion() || mn.isNative() || mn.isAbstract()) {
+                if (mn.owner.isAnnoyingVersion() || mn.isNative() || mn.isAbstract()
+                        || (isNativeCandidate(mn) && !config.getBoolean("native.javaBodyTransforms", true))) {
                     progressBar.tick();
                     continue;
                 }
@@ -433,6 +436,9 @@ public class Skidfuscator {
          * candidates from structural transformations above and the raw-ASM passes
          * below.
          */
+        // NativePipeline builds isolated SSA snapshots from finalized bytecode.
+        // The ordinary cached builder intentionally leaves SSA for Java transforms;
+        // neither that graph nor mn.dump() output is suitable for native lowering.
         this.nativeCompilationPlan = nativePipeline.prepare(this.nativeCompilationPlan);
         EventBus.end();
 
@@ -1331,7 +1337,8 @@ public class Skidfuscator {
                      * lowers the finalized CFG after mn.dump(). Identity-changing group and raw
                      * ASM passes are gated separately above/below this loop.
                      */
-                    if (exemptAnalysis.isExempt(methodNode)) {
+                    if (exemptAnalysis.isExempt(methodNode)
+                            || (isNativeCandidate(methodNode) && !config.getBoolean("native.javaBodyTransforms", true))) {
                         progressBar.tick();
                         continue;
                     }

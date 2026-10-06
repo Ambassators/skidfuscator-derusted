@@ -44,6 +44,7 @@ public final class NativeLoaderGenerator {
         writer.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
                 "loaded", "Z", null, null).visitEnd();
         constructor(writer);
+        bindingMethods(writer, owner);
         readFully(writer);
         sha256(writer);
         normalizePlatform(writer);
@@ -54,6 +55,47 @@ public final class NativeLoaderGenerator {
         ensureLoaded(writer, owner, spec);
         writer.visitEnd();
         return new GeneratedLoader(spec.internalName(), writer.toByteArray());
+    }
+
+    private static void bindingMethods(final ClassWriter writer, final Type owner) {
+        final Type set = Type.getType(java.util.Set.class);
+        final Type hashSet = Type.getType(java.util.HashSet.class);
+        writer.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "bound", set.getDescriptor(), null, null).visitEnd();
+        GeneratorAdapter initializer = new GeneratorAdapter(Opcodes.ACC_STATIC,
+                new Method("<clinit>", "()V"), null, null, writer);
+        initializer.newInstance(hashSet);
+        initializer.dup();
+        initializer.invokeConstructor(hashSet, new Method("<init>", "()V"));
+        initializer.putStatic(owner, "bound", set);
+        initializer.returnValue();
+        initializer.endMethod();
+        writer.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_NATIVE,
+                "bind", "(Ljava/lang/Class;Ljava/lang/String;)V", null, null).visitEnd();
+        // Register only the class whose initializer is actually running. Loading
+        // every owner from JNI_OnLoad changes initialization order and re-enters
+        // the loader before the library has finished loading.
+        GeneratorAdapter method = new GeneratorAdapter(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
+                new Method("ensureBound", "(Ljava/lang/Class;)V"), null, null, writer);
+        method.invokeStatic(owner, new Method("ensureLoaded", "()V"));
+        method.getStatic(owner, "bound", set);
+        method.loadArg(0);
+        method.invokeInterface(set, new Method("contains", "(Ljava/lang/Object;)Z"));
+        final Label bind = method.newLabel();
+        method.ifZCmp(GeneratorAdapter.EQ, bind);
+        method.returnValue();
+        method.mark(bind);
+        method.loadArg(0);
+        method.loadArg(0);
+        method.invokeVirtual(CLASS, new Method("getName", "()Ljava/lang/String;"));
+        method.invokeStatic(owner, new Method("bind", "(Ljava/lang/Class;Ljava/lang/String;)V"));
+        method.getStatic(owner, "bound", set);
+        method.loadArg(0);
+        method.invokeInterface(set, new Method("add", "(Ljava/lang/Object;)Z"));
+        method.pop();
+        method.returnValue();
+        method.endMethod();
     }
 
     private static void constructor(final ClassWriter writer) {

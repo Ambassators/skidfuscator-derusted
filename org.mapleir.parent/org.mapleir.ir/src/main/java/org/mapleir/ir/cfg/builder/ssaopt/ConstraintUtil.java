@@ -14,7 +14,14 @@ public class ConstraintUtil implements Opcode {
 	public static boolean isUncopyable(Expr e) {
 		for(Expr c : e.enumerateWithSelf()) {
 			int op = c.getOpcode();
-			if(isUncopyable0(op)) {
+            // A Java expression can throw or initialize a class even when its
+            // produced value is unused. Never duplicate/drop such evaluations.
+            boolean arithmeticException = c instanceof org.mapleir.ir.code.expr.ArithmeticExpr
+                    && (((org.mapleir.ir.code.expr.ArithmeticExpr) c).getOperator()
+                            == org.mapleir.ir.code.expr.ArithmeticExpr.Operator.DIV
+                        || ((org.mapleir.ir.code.expr.ArithmeticExpr) c).getOperator()
+                            == org.mapleir.ir.code.expr.ArithmeticExpr.Operator.REM);
+            if (isUncopyable0(op) || arithmeticException) {
 				return true;
 			}
 		}
@@ -27,6 +34,11 @@ public class ConstraintUtil implements Opcode {
 			case INIT_OBJ:
 			case ALLOC_OBJ:
 			case NEW_ARRAY:
+            case ARRAY_LEN:
+            case ARRAY_LOAD:
+            case FIELD_LOAD:
+            case CAST:
+            case INSTANCEOF:
 			case CATCH:
 			case EPHI:
 			case PHI:

@@ -5,5 +5,7 @@ public enum NativeSelectionSource {
     ANNOTATION_EXPLICIT,
     ANNOTATION_DEFAULT,
     RULE,
-    INCLUDE
+    INCLUDE,
+    THREADED_KEY,
+    JAVA_COPY
 }

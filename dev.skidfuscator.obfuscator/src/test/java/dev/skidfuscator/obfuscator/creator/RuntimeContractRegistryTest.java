@@ -49,7 +49,7 @@ class RuntimeContractRegistryTest implements Opcodes {
         assertThrows(IllegalStateException.class, registry::validate);
     }
 
-    @Test void pinsEnumNativeAndProtobufReflectionButNotPrivateImplementations() {
+    @Test void pinsEnumNativeAndProtobufReflectionIncludingPrivateSetters() {
         ClassNode enumeration = owner("fixture/Choice");
         enumeration.access |= ACC_ENUM;
         enumeration.superName = "java/lang/Enum";
@@ -72,7 +72,7 @@ class RuntimeContractRegistryTest implements Opcodes {
         RuntimeContractRegistry registry = registry(List.of(enumeration, exports, structure, proto), RuntimeContractRegistry.Options.defaults());
         for (MethodNode contract : List.of(values, valueOf, query, order, factory)) assertTrue(registry.isMethodContract(contract));
         assertTrue(registry.isFieldContract(field));
-        assertFalse(registry.isMethodContract(privateSetter));
+        assertTrue(registry.isMethodContract(privateSetter));
         assertFalse(registry.isMethodContract(enumHelper));
         field.name = "renamedLayoutField";
         assertThrows(IllegalStateException.class, registry::validate);

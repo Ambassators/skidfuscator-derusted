@@ -35,7 +35,9 @@ public final class NativeCandidateSelector {
 
     public Optional<NativeSelection> select(final MethodNode method) {
         Objects.requireNonNull(method, "method");
-        if (!config.isEnabled() || matchesAny(exemptions, method)) {
+        if (!config.isEnabled()
+                || (config.getThreadedKeyConfig().isEnabled() && config.getThreadedKeyConfig().isOnly())
+                || matchesAny(exemptions, method)) {
             return Optional.empty();
         }
 
@@ -60,7 +62,7 @@ public final class NativeCandidateSelector {
                     method,
                     resolveDefault(lastRule.mode),
                     NativeSelectionSource.RULE,
-                    false
+                    annotation.present
             ));
         }
 

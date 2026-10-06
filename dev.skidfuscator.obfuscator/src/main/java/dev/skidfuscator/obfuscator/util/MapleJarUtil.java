@@ -4,6 +4,7 @@ import com.esotericsoftware.asm.Type;
 import com.googlecode.d2j.node.DexFileNode;
 import com.googlecode.d2j.reader.DexFileReader;
 import dev.skidfuscator.obfuscator.Skidfuscator;
+import dev.skidfuscator.obfuscator.transform.impl.integrity.RuntimeProtection;
 import dev.skidfuscator.obfuscator.creator.SkidASMFactory;
 import dev.skidfuscator.obfuscator.creator.SkidFlowGraphDumper;
 import dev.skidfuscator.obfuscator.creator.SkidLibASMFactory;
@@ -40,6 +41,25 @@ public class MapleJarUtil {
     }
 
     public static void dumpJar(Skidfuscator skidfuscator, PassGroup masterGroup, String outputFile) throws IOException {
+        RuntimeProtection.validate(skidfuscator);
+        final java.nio.file.Path destination = new File(outputFile).toPath().toAbsolutePath();
+        java.nio.file.Files.createDirectories(destination.getParent());
+        final java.nio.file.Path stage = java.nio.file.Files.createTempFile(destination.getParent(), ".skid-output-", ".jar");
+        try {
+            dumpJarContents(skidfuscator, masterGroup, stage.toString());
+            RuntimeProtection.seal(skidfuscator, stage.toFile());
+            try {
+                java.nio.file.Files.move(stage, destination, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                java.nio.file.Files.move(stage, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            java.nio.file.Files.deleteIfExists(stage);
+        }
+    }
+
+    private static void dumpJarContents(Skidfuscator skidfuscator, PassGroup masterGroup, String outputFile) throws IOException {
         // Output-only Mixin protocol envelopes: retain transformed initializer bodies,
         // but never send their line-marked transplant wrappers through body passes.
         dev.skidfuscator.obfuscator.compatibility.MixinInitializerBridge.apply(skidfuscator);
@@ -61,11 +81,7 @@ public class MapleJarUtil {
                 ).dump(new File(outputFile));
                 return;
             }
-            Skidfuscator.LOGGER.warn(
-                    "\r[tamper] tamperProtection skipped this run: "
-                            + (!sdkEnabled ? "requires sdk.enabled" : "incompatible with fileCrasher.enabled")
-                            + ". Output written without integrity checks.\n"
-            );
+            throw new IOException("Requested tamper protection cannot be emitted with this configuration");
         }
 
         (new PhantomResolvingJarDumper(skidfuscator, skidfuscator.getJarContents(), skidfuscator.getClassSource()) {
@@ -90,7 +106,7 @@ public class MapleJarUtil {
                             ? ClassWriter.COMPUTE_MAXS : ClassWriter.COMPUTE_FRAMES);
                     final ClassWriter writer = buildClassWriter(skidfuscator.getClassSource().getClassTree(), flags);
                     cn.node.accept(new ClassRemapper(writer, skidfuscator.getClassRemapper()));
-                    bytes = writer.toByteArray();
+                    bytes = RuntimeProtection.instrument(skidfuscator, cn, writer.toByteArray());
                 } catch (Exception failure) {
                     // Original-class/MAXS fallbacks are not safe after cross-class rewrites.
                     throw new IOException("Unable to serialize transformed class " + cn.getName()

@@ -1,6 +1,7 @@
 package dev.skidfuscator.obfuscator.phantom.jphantom;
 
 import dev.skidfuscator.obfuscator.Skidfuscator;
+import dev.skidfuscator.obfuscator.transform.impl.integrity.RuntimeProtection;
 import dev.skidfuscator.obfuscator.creator.SkidFlowGraphDumper;
 import dev.skidfuscator.obfuscator.transform.impl.integrity.IntegrityGraph;
 import org.mapleir.app.service.ApplicationClassSource;
@@ -47,7 +48,7 @@ import java.util.jar.JarOutputStream;
  *   <li><b>Pass 1</b> — serialise every class to its final remapped bytes and
  *       buffer them (mirroring the normal dump: exempt handling,
  *       {@code COMPUTE_FRAMES}/{@code COMPUTE_MAXS}, the
- *       {@code MethodTooLargeException} failsafe and {@code fileCrasher} naming).</li>
+ *       strict serialization failure handling and ordinary JAR entry naming).</li>
  *   <li><b>Stamp</b> — build a DAG mesh over eligible classes and, in
  *       reverse-topological order, prepend
  *       {@code Tamper.verify(B.class, hash(B))} to each holder's {@code <clinit>}
@@ -142,33 +143,12 @@ public class TamperJarDumper extends PhantomResolvingJarDumper {
                 final int flags = SkidFlowGraphDumper.TEST_COMPUTE
                         ? ClassWriter.COMPUTE_MAXS
                         : ClassWriter.COMPUTE_FRAMES;
-                byte[] serialized;
+                final byte[] serialized;
                 try {
                     serialized = serialize(cn, tree, flags);
-                } catch (final org.objectweb.asm.MethodTooLargeException e) {
-                    // [failsafe] mirror the normal dump: still remap, skip compute.
-                    serialized = serialize(cn, tree, 0);
-                } catch (final Throwable t) {
-                    // [failsafe] COMPUTE_FRAMES can blow up (e.g. ASM Frame.merge
-                    // NPE) on a method the obfuscator left in a state ASM can't
-                    // reframe -- a dead incoming edge or an illegal cast, see the
-                    // post-transform verify warnings. The streaming
-                    // PhantomResolvingJarDumper degrades to COMPUTE_MAXS in exactly
-                    // this case; do the same here, otherwise a single bad method
-                    // aborts the whole tamper dump and we lose ALL output.
-                    byte[] degraded;
-                    try {
-                        degraded = serialize(cn, tree, ClassWriter.COMPUTE_MAXS);
-                    } catch (final Throwable t2) {
-                        // Last resort: remap names only, compute nothing.
-                        degraded = serialize(cn, tree, 0);
-                    }
-                    serialized = degraded;
-                    Skidfuscator.LOGGER.warn(
-                            "\r❗ Failed to compute frames for " + cn.getName()
-                                    + "; wrote it without recomputing frames "
-                                    + "(may cause runtime abnormalities).\n"
-                    );
+                } catch (final RuntimeException failure) {
+                    throw new IOException("Unable to serialize protected class " + cn.getName()
+                            + "; refusing unverified fallback bytecode", failure);
                 }
                 bytes = serialized;
                 eligible = isEligible(cn, finalInternal);
@@ -232,29 +212,20 @@ public class TamperJarDumper extends PhantomResolvingJarDumper {
                                       final ClassTree tree,
                                       final String verifyMethod) {
         final Map<String, byte[]> frozen = new HashMap<>();
-        if (graph.isEmpty()) {
-            Skidfuscator.LOGGER.warn(
-                    "\r[tamper] not enough eligible classes to build a cross-class mesh "
-                            + "(" + graph.nodes().size() + " eligible); no checks injected.\n"
-            );
-            return frozen;
+        if (graph.nodes().size() < 2) {
+            throw new IllegalStateException("Tamper mesh requires at least two eligible classes");
         }
 
         final List<String> order = graph.dependencyOrder();
         if (order == null) {
-            Skidfuscator.LOGGER.error(
-                    "\r[tamper] integrity graph contained a cycle (not a DAG); "
-                            + "skipping tamper stamping for safety.\n",
-                    new IllegalStateException("integrity graph is not a DAG")
-            );
-            return frozen;
+            throw new IllegalStateException("Tamper integrity graph must be acyclic");
         }
 
         for (final String name : order) {
             final Buffered holder = byFinal.get(name);
             final List<String> targets = graph.targetsOf(name);
             if (holder == null) {
-                continue;
+                throw new IllegalStateException("Missing protected class " + name);
             }
             if (targets.isEmpty()) {
                 frozen.put(name, holder.bytes);
@@ -283,14 +254,8 @@ public class TamperJarDumper extends PhantomResolvingJarDumper {
                 // void call), so every downstream frame remains valid under COMPUTE_MAXS.
                 clinit.instructions.insert(prologue);
                 frozen.put(name, write(node, tree));
-            } catch (final Throwable t) {
-                // Degrade safely: ship this holder unstamped rather than risk a
-                // corrupt class. It then verifies nothing, but its own bytes stay
-                // consistent for whoever verifies it.
-                frozen.put(name, holder.bytes);
-                Skidfuscator.LOGGER.warn(
-                        "\r[tamper] failed to stamp " + name + "; shipping it without a check.\n"
-                );
+            } catch (final RuntimeException failure) {
+                throw new IllegalStateException("Unable to stamp protected class " + name, failure);
             }
         }
 
@@ -313,7 +278,7 @@ public class TamperJarDumper extends PhantomResolvingJarDumper {
         final ClassWriter writer = buildClassWriter(tree, flags);
         final ClassRemapper remapper = new ClassRemapper(writer, skidfuscator.getClassRemapper());
         cn.node.accept(remapper);
-        return writer.toByteArray();
+        return RuntimeProtection.instrument(skidfuscator, cn, writer.toByteArray());
     }
 
     private org.objectweb.asm.tree.ClassNode read(final byte[] bytes) {

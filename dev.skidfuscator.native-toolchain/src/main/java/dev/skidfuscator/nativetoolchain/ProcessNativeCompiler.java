@@ -68,7 +68,110 @@ public final class ProcessNativeCompiler implements NativeCompiler {
             throws IOException, InterruptedException {
         Objects.requireNonNull(request, "request");
         verifier.verifyOrThrow(request.module());
+        ToolchainManifestVerifier.verifyInstalledDriver(
+                request.toolchain().home(), request.toolchain().manifest(), request.currentHost());
+        return compileModule(new CompilationInputs(request.module(), request.outputDirectory(),
+                request.targets(), request.currentHost(), request.buildId(), request.vmProtection()),
+                executable(request.toolchain().home(), request.currentHost()));
+    }
+
+    /**
+     * Explicit, unsigned developer entrypoint. Never used as a resolver fallback.
+     * Requires an absolute local SkidLLVM driver, the current host only, and AOT
+     * functions only. Release compilation continues to require authentication.
+     */
+    public NativeCompilationResult compileExplicitLocalAot(
+            final dev.skidfuscator.nativeir.NativeModule module,
+            final Path driver,
+            final Path outputDirectory,
+            final java.util.Set<NativeTarget> targets,
+            final NativeTarget currentHost,
+            final String buildId,
+            final String expectedVersion
+    ) throws IOException, InterruptedException {
+        Objects.requireNonNull(module, "module");
+        Objects.requireNonNull(driver, "driver");
+        Objects.requireNonNull(outputDirectory, "outputDirectory");
+        Objects.requireNonNull(currentHost, "currentHost");
+        final java.util.Set<NativeTarget> selected = java.util.Set.copyOf(targets);
+        if (!driver.isAbsolute() || !Files.isRegularFile(driver)) {
+            throw new NativeCompilationException("Local development requires an absolute existing SkidLLVM driver");
+        }
+        if (!selected.equals(java.util.Set.of(currentHost))) {
+            throw new NativeCompilationException("Local development supports the current host target only");
+        }
+        if (module.functions().isEmpty() || module.functions().stream()
+                .anyMatch(function -> function.backend() != NativeBackend.AOT)) {
+            throw new NativeCompilationException("Local development is AOT-only; VM functions are not accepted");
+        }
+        if (buildId == null || !buildId.matches("[A-Za-z0-9._-]{1,128}")) {
+            throw new IllegalArgumentException("Invalid native build id");
+        }
+        if (expectedVersion == null || !expectedVersion.matches("[A-Za-z0-9._-]{1,128}")) {
+            throw new IllegalArgumentException("Invalid SkidLLVM development version");
+        }
+        verifier.verifyOrThrow(module);
+        final Path output = outputDirectory.toAbsolutePath().normalize();
+        Files.createDirectories(output);
+        final Path executable = driver.toRealPath();
+        final ProcessExecutor.Result version = executor.execute(
+                List.of(executable.toString(), "--version"), output, Duration.ofSeconds(30));
+        final String required = "SkidLLVM " + expectedVersion
+                + " (LLVM 18.1.8, native IR ABI " + module.abiVersion() + ")";
+        if (version.timedOut() || version.exitCode() != 0 || !required.equals(version.output().strip())) {
+            throw new NativeCompilationException("Local SkidLLVM version/ABI check failed: " + bounded(version.output()));
+        }
+        return compileModule(new CompilationInputs(module, output, selected, currentHost,
+                buildId, VmProtectionSettings.aggressive()), executable);
+    }
+
+    private record CompilationInputs(
+            dev.skidfuscator.nativeir.NativeModule module, Path outputDirectory,
+            java.util.Set<NativeTarget> targets, NativeTarget currentHost,
+            String buildId, VmProtectionSettings vmProtection) { }
+
+    private NativeCompilationResult compileModule(final CompilationInputs request, final Path driver)
+            throws IOException, InterruptedException {
+        verifier.verifyOrThrow(request.module());
         Files.createDirectories(request.outputDirectory());
+        final boolean selectiveEntries = request.module().functions().stream()
+                .anyMatch(function -> function.metadata().containsKey("java.entry"));
+        final boolean reviewedEntries = request.module().functions().stream()
+                .anyMatch(function -> "closed-world-v1".equals(function.metadata().get("java.entryScope")));
+        final boolean crossClassEntries = request.module().functions().stream()
+                .anyMatch(function -> "cross-class-v1".equals(function.metadata().get("java.entryCalls")));
+        final boolean nativeFields = request.module().functions().stream().flatMap(f->f.blocks().stream())
+                .flatMap(b->b.instructions().stream()).filter(dev.skidfuscator.nativeir.NativeInstruction.Operation.class::isInstance)
+                .map(dev.skidfuscator.nativeir.NativeInstruction.Operation.class::cast)
+                .anyMatch(op->op.attributes().containsKey("native.field.storage"));
+        final boolean cppProtobuf = request.module().functions().stream()
+                .anyMatch(f -> f.metadata().containsKey("cpp.protobuf.kernel") || f.metadata().containsKey("cpp.windows.scanner"));
+        final boolean cppScanner = request.module().functions().stream().anyMatch(f->f.metadata().containsKey("cpp.windows.scanner"));
+        if (cppProtobuf && !request.module().metadata().containsKey("cpp.protobuf.bundle"))
+            throw new NativeCompilationException("C++ protobuf region has no compilation bundle");
+        if ("class-local-v1".equals(request.module().metadata().get("registration")) || selectiveEntries || nativeFields || cppProtobuf) {
+            final ProcessExecutor.Result contract = executor.execute(List.of(driver.toString(), "--contract"),
+                    request.outputDirectory(), Duration.ofSeconds(30));
+            if (contract.timedOut() || contract.exitCode() != 0
+                    || !contract.output().contains("\"class-local-registration-v1\"")) {
+                throw new NativeCompilationException("SkidLLVM lacks required class-local-registration-v1 capability");
+            }
+            if (selectiveEntries && !contract.output().contains("\"selective-java-entries-v1\"")) {
+                throw new NativeCompilationException("SkidLLVM lacks required selective-java-entries-v1 capability");
+            }
+            if (reviewedEntries && !contract.output().contains("\"closed-world-java-entries-v1\"")) {
+                throw new NativeCompilationException("SkidLLVM lacks required closed-world-java-entries-v1 capability");
+            }
+            if (crossClassEntries && !contract.output().contains("\"cross-class-java-entries-v1\"")) {
+                throw new NativeCompilationException("SkidLLVM lacks required cross-class-java-entries-v1 capability");
+            }
+            if(nativeFields && !contract.output().contains("\"native-primitive-fields-v1\""))
+                throw new NativeCompilationException("SkidLLVM lacks required native-primitive-fields-v1 capability");
+            if(cppProtobuf && !contract.output().contains("\"cpp-protobuf-batch-v1\""))
+                throw new NativeCompilationException("SkidLLVM lacks required cpp-protobuf-batch-v1 capability");
+            if(cppScanner && !contract.output().contains("\"cpp-current-jvm-scanner-v1\""))
+                throw new NativeCompilationException("SkidLLVM lacks required cpp-current-jvm-scanner-v1 capability");
+        }
 
         final byte[] llvmIr = Objects.requireNonNull(emitter.emit(request.module()), "emitter result");
         if (llvmIr.length == 0) {
@@ -93,9 +196,6 @@ public final class ProcessNativeCompiler implements NativeCompiler {
         }
         try {
             final String moduleDigest = sha256(llvmPath);
-            final Path driver = executable(request.toolchain().home(), request.currentHost());
-            ToolchainManifestVerifier.verifyInstalledDriver(
-                    request.toolchain().home(), request.toolchain().manifest(), request.currentHost());
 
             final Map<NativeTarget, Path> libraries = new EnumMap<>(NativeTarget.class);
             final Map<NativeTarget, NativeArtifact> artifacts = new EnumMap<>(NativeTarget.class);
@@ -126,6 +226,10 @@ public final class ProcessNativeCompiler implements NativeCompiler {
                     command.add(Integer.toString(request.module().abiVersion()));
                     command.add("--build-id");
                     command.add(request.buildId());
+                    if (cppProtobuf) {
+                        command.add("--cpp-bundle");
+                        command.add(request.module().metadata().get("cpp.protobuf.bundle"));
+                    }
                     if (vmPayload != null) {
                         command.add("--vm-payload");
                         command.add(vmPayload.toString());
@@ -145,6 +249,8 @@ public final class ProcessNativeCompiler implements NativeCompiler {
                     }
 
                     final ProcessExecutor.Result result = executor.execute(command, request.outputDirectory(), timeout);
+                    Files.writeString(targetDirectory.resolve("compiler.log"),
+                            result.output() == null ? "" : result.output(), java.nio.charset.StandardCharsets.UTF_8);
                     if (result.timedOut()) {
                         Files.deleteIfExists(temporaryLibrary);
                         throw new NativeCompilationException("SkidLLVM timed out compiling " + target.id());

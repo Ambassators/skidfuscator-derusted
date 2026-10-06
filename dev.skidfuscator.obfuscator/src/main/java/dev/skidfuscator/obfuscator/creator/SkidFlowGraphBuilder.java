@@ -40,6 +40,11 @@ public class SkidFlowGraphBuilder extends ControlFlowGraphBuilder {
         };
     }
 
+    /** Rebuild finalized bytecode for native lowering without destroying SSA or allocating JVM locals. */
+    public static ControlFlowGraph buildNativeSsa(final Skidfuscator skidfuscator, final MethodNode method) {
+        return new SkidFlowGraphBuilder(method, SkidBlockFactory.v(skidfuscator), skidfuscator).buildImpl();
+    }
+
     public static ControlFlowGraph build(final Skidfuscator skidfuscator, final MethodNode method) {
         ControlFlowGraphBuilder builder = new SkidFlowGraphBuilder(method, SkidBlockFactory.v(skidfuscator), skidfuscator);
         final ControlFlowGraph cfg = builder.buildImpl();

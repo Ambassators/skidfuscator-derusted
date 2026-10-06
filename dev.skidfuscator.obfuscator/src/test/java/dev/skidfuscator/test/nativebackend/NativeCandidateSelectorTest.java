@@ -65,6 +65,33 @@ class NativeCandidateSelectorTest {
         assertTrue(selector.select(method).isEmpty());
     }
 
+    @Test
+    void defaultAnnotationRemainsStrictWhenARuleChoosesTheMode() {
+        final var selector = selector("""
+                native { enabled = true, rules = [{ match = "method{selected}", mode = VM }] }
+                """);
+        final MethodNode selected = method("demo/Target", "selected");
+        annotate(selected, null);
+        assertSelection(selector, selected, NativeMode.VM, NativeSelectionSource.RULE, true);
+    }
+
+    @Test
+    void keyOnlyModeSuppressesAllApplicationBodySelections() {
+        final var selector = selector("""
+                native {
+                  enabled = true
+                  threadedKey { enabled = true, only = true, mode = VM }
+                  "include" = ["method{included}"]
+                  rules = [{ match = "method{selected}", mode = VM }]
+                }
+                """);
+        final MethodNode annotated = method("demo/Target", "annotated");
+        annotate(annotated, "VM");
+        assertTrue(selector.select(annotated).isEmpty());
+        assertTrue(selector.select(method("demo/Target", "selected")).isEmpty());
+        assertTrue(selector.select(method("demo/Target", "included")).isEmpty());
+    }
+
     private static void assertSelection(NativeCandidateSelector selector,
                                         MethodNode method,
                                         NativeMode mode,

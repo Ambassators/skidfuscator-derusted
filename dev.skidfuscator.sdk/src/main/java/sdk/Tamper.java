@@ -23,9 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>The hash is {@link LongHashFunction#xx3()} over the entire class file, the
  * same primitive the rest of the SDK already relies on for build/runtime hash
- * agreement. The helper is deliberately lenient when the target resource cannot
- * be read (exploded runs, agents, odd class loaders): it never raises a false
- * positive in those cases.</p>
+ * agreement. Unreadable or missing resources fail closed. This legacy checksum reads
+ * resource bytes, not live JVM bytecode; use the sealed-archive runtime guard
+ * for strict release validation and JVM launch policy.</p>
  */
 public final class Tamper {
 
@@ -74,7 +74,7 @@ public final class Tamper {
      * {@link #verifyExit} expose.
      *
      * <p>A correctly-running program never reaches the reaction path (every check
-     * matches, and the helper is lenient on unreadable bytes), so it behaves
+     * matches and all protected resources are readable), so it behaves
      * exactly like an unprotected build.</p>
      */
     public static void verifySilent(final Class<?> target, final long expected) {
@@ -135,7 +135,7 @@ public final class Tamper {
 
     private static boolean matches(final Class<?> target, final long expected) {
         if (target == null) {
-            return true;
+            return false;
         }
 
         // Absolute resource path from the binary name (e.g. "/a/b/C.class"), resolved
@@ -147,14 +147,13 @@ public final class Tamper {
         try {
             in = target.getResourceAsStream(resource);
             if (in == null) {
-                // Cannot read our own bytes (exploded dir, instrumentation, custom
-                // loader). Out of scope for v1 — never false-positive on a clean jar.
-                return true;
+                // Unreadable bytes are unverifiable, not proof of a clean class.
+                return false;
             }
             final long actual = LongHashFunction.xx3().hashBytes(readFully(in));
             return actual == expected;
-        } catch (final Throwable t) {
-            return true;
+        } catch (final IOException | RuntimeException t) {
+            return false;
         } finally {
             if (in != null) {
                 try {
@@ -170,6 +169,9 @@ public final class Tamper {
         final byte[] buffer = new byte[8192];
         int read;
         while ((read = in.read(buffer)) != -1) {
+            if ((long) out.size() + read > 16L * 1024 * 1024) {
+                throw new IOException("Protected class exceeds verification size limit");
+            }
             out.write(buffer, 0, read);
         }
         return out.toByteArray();

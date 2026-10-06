@@ -55,6 +55,19 @@ public final class NativeMethodCommitTransaction {
             final Collection<JavaLinkageHelper> linkageHelpers,
             final ResourceStager resourceStager
     ) throws IOException {
+        return commit(contents,loader,mutations,linkageHelpers,List.of(),resourceStager);
+    }
+
+    public record FieldRemoval(ClassNode owner, org.objectweb.asm.tree.FieldNode field) { }
+
+    public CommitResult commit(
+            final JarContents contents,
+            final NativeLoaderGenerator.GeneratedLoader loader,
+            final Collection<Mutation> mutations,
+            final Collection<JavaLinkageHelper> linkageHelpers,
+            final Collection<FieldRemoval> fieldRemovals,
+            final ResourceStager resourceStager
+    ) throws IOException {
         Objects.requireNonNull(contents, "contents");
         Objects.requireNonNull(loader, "loader");
         Objects.requireNonNull(mutations, "mutations");
@@ -62,6 +75,15 @@ public final class NativeMethodCommitTransaction {
         Objects.requireNonNull(resourceStager, "resourceStager");
         final List<Mutation> ordered = List.copyOf(mutations);
         final List<JavaLinkageHelper> helpers = List.copyOf(linkageHelpers);
+        final List<FieldRemoval> fields = List.copyOf(fieldRemovals);
+        for (FieldRemoval removal : fields) {
+            var field=removal.field();
+            if (!removal.owner().node.fields.contains(field)
+                    || contents.getClassContents().stream().noneMatch(c->c.getClassNode()==removal.owner())
+                    || field.desc.length()!=1 || "ZBCSIJFD".indexOf(field.desc.charAt(0))<0
+                    || (field.access&(Opcodes.ACC_FINAL|Opcodes.ACC_ENUM))!=0 || field.value!=null)
+                throw new IllegalArgumentException("Invalid reviewed native primitive field removal");
+        }
         if (ordered.isEmpty()) {
             throw new IllegalArgumentException("At least one native method mutation is required");
         }
@@ -71,6 +93,7 @@ public final class NativeMethodCommitTransaction {
         final List<JarResource> resourceSnapshot = new ArrayList<>(contents.getResourceContents());
         final Map<org.objectweb.asm.tree.MethodNode, MethodSnapshot> methods = snapshots(ordered);
         final Map<ClassNode, ClassSnapshot> owners = ownerSnapshots(ordered, helpers);
+        for (FieldRemoval field : fields) owners.putIfAbsent(field.owner(),new ClassSnapshot(field.owner()));
         try {
             // Native bytes and authenticated manifests must be durable in the output model first.
             final List<String> stagedResources = List.copyOf(resourceStager.stage(contents));
@@ -86,6 +109,10 @@ public final class NativeMethodCommitTransaction {
             // Method bodies are changed only after every fallible staging and initialization step.
             for (final Mutation mutation : ordered) {
                 applyMutation(mutation, loader.internalName());
+            }
+            for (FieldRemoval field : fields) {
+                field.owner().node.fields.remove(field.field());
+                field.owner().getFields().removeIf(f->f.node==field.field());
             }
             return new CommitResult(loader.internalName(), stagedResources, ordered.size());
         } catch (final IOException | RuntimeException | Error failure) {
@@ -106,7 +133,10 @@ public final class NativeMethodCommitTransaction {
             final List<JavaLinkageHelper> linkageHelpers
     ) {
         validateLoaderCollision(contents, loader.internalName());
-        final ClassNode loaderNode = ClassHelper.create(loader.bytecode());
+        // This loader is installed after SSA/bytecode dumping and may be exempt
+        // from later transforms. Preserve its generated Java 8 stack-map frames;
+        // ClassHelper's default parser strips them and causes VerifyError.
+        final ClassNode loaderNode = ClassHelper.create(loader.bytecode(), 0);
         if (!loader.internalName().equals(loaderNode.getName())) {
             throw new IllegalArgumentException("Generated loader name does not match its bytecode");
         }
@@ -118,11 +148,16 @@ public final class NativeMethodCommitTransaction {
                         + mutation.method());
             }
             validateAttached(contents, mutation.method());
-            if (mutation instanceof Direct direct) {
-                final NativeEligibility.Result eligibility = NativeEligibility.check(direct.method());
+            if (mutation instanceof Direct || mutation instanceof JavaCopy || mutation instanceof Remove) {
+                final NativeEligibility.Result eligibility = NativeEligibility.check(mutation.method());
                 if (eligibility.conversion() != NativeEligibility.Conversion.DIRECT) {
                     throw new IllegalArgumentException("Method is not eligible for direct native conversion: "
                             + eligibility.reason());
+                }
+                if (mutation instanceof Remove removal && (((mutation.method().node.access & Opcodes.ACC_PRIVATE) == 0
+                        && !removal.reviewedClosedWorld())
+                        || (mutation.method().node.access & Opcodes.ACC_SYNCHRONIZED) != 0)) {
+                    throw new IllegalArgumentException("Removal requires a proven private or reviewed closed-world, unsynchronized AOT entry");
                 }
             } else if (mutation instanceof Wrapper wrapper) {
                 validateWrapper(contents, wrapper, helperKeys);
@@ -240,6 +275,9 @@ public final class NativeMethodCommitTransaction {
     private static void installInitialization(final List<Mutation> mutations, final String loaderName) {
         final Set<ClassNode> initialized = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
         for (final Mutation mutation : mutations) {
+            // Wrapper companions bind at their wrapper entry, not the original
+            // owner's initializer (which may not declare any native methods).
+            if (!(mutation instanceof Direct)) continue;
             final ClassNode owner = mutation.method().owner;
             if (!initialized.add(owner) || isSelectedClassInitializer(mutation)) {
                 continue;
@@ -250,31 +288,24 @@ public final class NativeMethodCommitTransaction {
             if (initializer == null) {
                 final org.objectweb.asm.tree.MethodNode created = new org.objectweb.asm.tree.MethodNode(
                         Opcodes.ASM9, Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
-                created.instructions.add(loaderCall(loaderName));
+                created.instructions.add(loaderBinding(loaderName, owner));
                 created.instructions.add(new org.objectweb.asm.tree.InsnNode(Opcodes.RETURN));
+                created.maxStack = 1;
                 owner.addMethod(new MethodNode(created, owner));
-            } else if (!startsWithLoaderCall(initializer, loaderName)) {
-                initializer.instructions.insert(loaderCall(loaderName));
+            } else {
+                initializer.instructions.insert(loaderBinding(loaderName, owner));
+                initializer.maxStack = Math.max(initializer.maxStack, 1);
             }
         }
     }
 
-    private static boolean startsWithLoaderCall(
-            final org.objectweb.asm.tree.MethodNode method,
-            final String loaderName
-    ) {
-        AbstractInsnNode instruction = method.instructions.getFirst();
-        while (instruction != null && instruction.getOpcode() < 0) {
-            instruction = instruction.getNext();
-        }
-        return instruction instanceof MethodInsnNode invocation
-                && invocation.getOpcode() == Opcodes.INVOKESTATIC
-                && invocation.owner.equals(loaderName)
-                && invocation.name.equals("ensureLoaded")
-                && invocation.desc.equals("()V");
-    }
-
     private static void applyMutation(final Mutation mutation, final String loaderName) {
+        if (mutation instanceof JavaCopy) return;
+        if (mutation instanceof Remove removed) {
+            removed.method().owner.getMethods().remove(removed.method());
+            removed.method().owner.node.methods.remove(removed.method().node);
+            return;
+        }
         if (mutation instanceof Direct direct) {
             clearCode(direct.method().node);
             direct.method().node.access = (direct.method().node.access
@@ -284,15 +315,20 @@ public final class NativeMethodCommitTransaction {
         }
         final Wrapper wrapper = (Wrapper) mutation;
         final org.objectweb.asm.tree.MethodNode replacement = cloneMethod(wrapper.wrapperTemplate());
-        replacement.instructions.insert(loaderCall(loaderName));
+        replacement.instructions.insert(loaderBinding(loaderName, wrapper.helperOwner()));
+        replacement.maxStack = Math.max(replacement.maxStack, 1);
         replaceCode(wrapper.method().node, replacement);
         wrapper.method().node.access &= ~(Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT);
         removeNativeAnnotation(wrapper.method().node);
         wrapper.helperOwner().addMethod(new MethodNode(cloneMethod(wrapper.nativeHelper()), wrapper.helperOwner()));
     }
 
-    private static MethodInsnNode loaderCall(final String loaderName) {
-        return new MethodInsnNode(Opcodes.INVOKESTATIC, loaderName, "ensureLoaded", "()V", false);
+    private static InsnList loaderBinding(final String loaderName, final ClassNode owner) {
+        final InsnList instructions = new InsnList();
+        instructions.add(new org.objectweb.asm.tree.LdcInsnNode(Type.getObjectType(owner.getName())));
+        instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, loaderName,
+                "ensureBound", "(Ljava/lang/Class;)V", false));
+        return instructions;
     }
 
     private static void clearCode(final org.objectweb.asm.tree.MethodNode method) {
@@ -363,7 +399,15 @@ public final class NativeMethodCommitTransaction {
     ) {
         final Map<org.objectweb.asm.tree.MethodNode, MethodSnapshot> snapshots = new IdentityHashMap<>();
         for (final Mutation mutation : mutations) {
-            snapshots.put(mutation.method().node, new MethodSnapshot(cloneMethod(mutation.method().node)));
+            snapshots.putIfAbsent(mutation.method().node,
+                    new MethodSnapshot(cloneMethod(mutation.method().node)));
+            // installInitialization also mutates existing initializers. Merely restoring
+            // the owner's method lists does not undo edits to these shared MethodNodes.
+            for (final org.objectweb.asm.tree.MethodNode method : mutation.method().owner.node.methods) {
+                if ("<clinit>".equals(method.name) && "()V".equals(method.desc)) {
+                    snapshots.putIfAbsent(method, new MethodSnapshot(cloneMethod(method)));
+                }
+            }
         }
         return snapshots;
     }
@@ -412,8 +456,19 @@ public final class NativeMethodCommitTransaction {
         return mutation instanceof Wrapper && mutation.method().isClinit();
     }
 
-    public sealed interface Mutation permits Direct, Wrapper {
+    public sealed interface Mutation permits Direct, Wrapper, JavaCopy, Remove {
         MethodNode method();
+    }
+
+    /** A native implementation exists, but Java continues to execute this exact body. */
+    public record JavaCopy(MethodNode method) implements Mutation {
+        public JavaCopy { Objects.requireNonNull(method, "method"); }
+    }
+
+    /** The entry policy and LLVM verifier proved that no Java dispatch needs this declaration. */
+    public record Remove(MethodNode method, boolean reviewedClosedWorld) implements Mutation {
+        public Remove(MethodNode method) { this(method, false); }
+        public Remove { Objects.requireNonNull(method, "method"); }
     }
 
     public record Direct(MethodNode method) implements Mutation {
@@ -483,9 +538,11 @@ public final class NativeMethodCommitTransaction {
         }
     }
 
-    private record ClassSnapshot(List<MethodNode> methods, List<org.objectweb.asm.tree.MethodNode> asmMethods) {
+    private record ClassSnapshot(List<MethodNode> methods, List<org.objectweb.asm.tree.MethodNode> asmMethods,
+                                 List<org.mapleir.asm.FieldNode> fields, List<org.objectweb.asm.tree.FieldNode> asmFields) {
         private ClassSnapshot(final ClassNode owner) {
-            this(new ArrayList<>(owner.getMethods()), new ArrayList<>(owner.node.methods));
+            this(new ArrayList<>(owner.getMethods()), new ArrayList<>(owner.node.methods),
+                    new ArrayList<>(owner.getFields()),new ArrayList<>(owner.node.fields));
         }
 
         private void restore(final ClassNode owner) {
@@ -493,6 +550,8 @@ public final class NativeMethodCommitTransaction {
             owner.getMethods().addAll(methods);
             owner.node.methods.clear();
             owner.node.methods.addAll(asmMethods);
+            owner.getFields().clear();owner.getFields().addAll(fields);
+            owner.node.fields.clear();owner.node.fields.addAll(asmFields);
         }
     }
 }

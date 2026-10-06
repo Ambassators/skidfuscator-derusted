@@ -61,9 +61,14 @@ class NativeMethodCommitTransactionTest {
         assertEquals(2, contents.getClassContents().size());
         final MethodNode initializer = target.owner().getMethods().stream()
                 .filter(MethodNode::isClinit).findFirst().orElseThrow();
-        final MethodInsnNode load = assertInstanceOf(
-                MethodInsnNode.class, initializer.node.instructions.getFirst());
+        final org.objectweb.asm.tree.LdcInsnNode ownerLiteral = assertInstanceOf(
+                org.objectweb.asm.tree.LdcInsnNode.class, initializer.node.instructions.getFirst());
+        assertEquals(org.objectweb.asm.Type.getObjectType(target.owner().getName()), ownerLiteral.cst);
+        final MethodInsnNode load = assertInstanceOf(MethodInsnNode.class, ownerLiteral.getNext());
         assertEquals(LOADER, load.owner);
+        assertEquals("ensureBound", load.name);
+        assertEquals("(Ljava/lang/Class;)V", load.desc);
+        assertTrue(initializer.node.maxStack >= 1);
         assertTrue(ClassHelper.toByteArray(target.owner(), ClassWriter.COMPUTE_MAXS).length > 0);
     }
 
@@ -119,9 +124,14 @@ class NativeMethodCommitTransactionTest {
                 jar -> List.of());
 
         assertFalse(target.method().isNative());
-        final MethodInsnNode load = assertInstanceOf(
-                MethodInsnNode.class, target.method().node.instructions.getFirst());
+        final org.objectweb.asm.tree.LdcInsnNode ownerLiteral = assertInstanceOf(
+                org.objectweb.asm.tree.LdcInsnNode.class, target.method().node.instructions.getFirst());
+        assertEquals(org.objectweb.asm.Type.getObjectType(target.owner().getName()), ownerLiteral.cst);
+        final MethodInsnNode load = assertInstanceOf(MethodInsnNode.class, ownerLiteral.getNext());
         assertEquals(LOADER, load.owner);
+        assertEquals("ensureBound", load.name);
+        assertEquals("(Ljava/lang/Class;)V", load.desc);
+        assertTrue(target.method().node.maxStack >= 1);
         final MethodNode installedHelper = target.owner().getMethods().stream()
                 .filter(method -> method.getName().equals("skid$native$init"))
                 .findFirst().orElseThrow();
@@ -204,6 +214,58 @@ class NativeMethodCommitTransactionTest {
                 method.getName().equals("skid$link$0") && method.isStatic() && method.isSynthetic()
                         && !method.isNative()));
         assertTrue(ClassHelper.toByteArray(target.owner(), ClassWriter.COMPUTE_MAXS).length > 0);
+    }
+
+    @Test
+    void restoresAnExistingInitializerAfterLateMutationFailure() throws Exception {
+        final Target target = ordinaryTarget("sample/ExistingInitializer", Opcodes.ACC_PUBLIC, "value", "()I");
+        final org.objectweb.asm.tree.MethodNode asm = new org.objectweb.asm.tree.MethodNode(
+                Opcodes.ASM9, Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+        asm.instructions.add(new InsnNode(Opcodes.NOP));
+        asm.instructions.add(new InsnNode(Opcodes.RETURN));
+        final MethodNode initializer = new MethodNode(asm, target.owner());
+        target.owner().addMethod(initializer);
+        final JarContents contents = contents(target.owner());
+        target.method().node.attrs = new ArrayList<>(List.of(new ExplodingCodeAttribute()));
+        assertThrows(IllegalStateException.class, () -> new NativeMethodCommitTransaction().commit(
+                contents, loader(), List.of(new NativeMethodCommitTransaction.Direct(target.method())),
+                jar -> List.of()));
+        assertEquals(2, initializer.node.instructions.size());
+        assertEquals(Opcodes.NOP, initializer.node.instructions.getFirst().getOpcode());
+        assertEquals(Opcodes.RETURN, initializer.node.instructions.getLast().getOpcode());
+        assertTrue(target.owner().node.methods.contains(initializer.node));
+        assertFalse(target.method().isNative());
+        assertEquals(1, contents.getClassContents().size());
+    }
+
+    @Test
+    void copiesKeepTheirBodyAndRemovedEntriesLeaveNoBindingInitializer() throws Exception {
+        Target copy = ordinaryTarget("sample/Copy", Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "value", "()I");
+        Target removed = ordinaryTarget("sample/Removed", Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "value", "()I");
+        var originalCode = copy.method().node.instructions;
+        new NativeMethodCommitTransaction().commit(contents(copy.owner(), removed.owner()), loader(),
+                List.of(new NativeMethodCommitTransaction.JavaCopy(copy.method()),
+                        new NativeMethodCommitTransaction.Remove(removed.method())), jar -> List.of());
+        org.junit.jupiter.api.Assertions.assertSame(originalCode, copy.method().node.instructions);
+        assertFalse(copy.method().isNative());
+        assertFalse(removed.owner().getMethods().contains(removed.method()));
+        assertFalse(removed.owner().node.methods.contains(removed.method().node));
+        assertFalse(copy.owner().getMethods().stream().anyMatch(MethodNode::isClinit));
+        assertFalse(removed.owner().getMethods().stream().anyMatch(MethodNode::isClinit));
+    }
+
+    @Test
+    void restoresRemovedDeclarationIfLaterMutationFails() throws Exception {
+        Target removed = ordinaryTarget("sample/Removed", Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "value", "()I");
+        Target failure = ordinaryTarget("sample/Failure", Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "value", "()I");
+        var contents = contents(removed.owner(), failure.owner());
+        failure.method().node.attrs = new ArrayList<>(List.of(new ExplodingCodeAttribute()));
+        assertThrows(IllegalStateException.class, () -> new NativeMethodCommitTransaction().commit(contents, loader(),
+                List.of(new NativeMethodCommitTransaction.Remove(removed.method()),
+                        new NativeMethodCommitTransaction.Direct(failure.method())), jar -> List.of()));
+        assertTrue(removed.owner().getMethods().contains(removed.method()));
+        assertTrue(removed.owner().node.methods.contains(removed.method().node));
+        assertEquals(2, removed.method().node.instructions.size());
     }
 
     private static NativeLoaderGenerator.GeneratedLoader loader() {

@@ -450,6 +450,7 @@ public final class MapleNativeIrLowerer {
             }
             createParameters();
             predeclareBlocksAndDefinitions();
+            promoteBoundaryParameters();
             lowerBlocks();
             addExceptionEdges();
 
@@ -464,6 +465,10 @@ public final class MapleNativeIrLowerer {
                             "lowering", "maple-ssa-v2",
                             "semanticContext", requiresSemanticContext ? "jni" : "none",
                             "java.static", Boolean.toString(method.isStatic() || constructorTail),
+                            "java.final", Boolean.toString((method.node.access & Opcodes.ACC_FINAL) != 0),
+                            "java.private", Boolean.toString((method.node.access & Opcodes.ACC_PRIVATE) != 0),
+                            "java.classFinal", Boolean.toString((method.owner.node.access & Opcodes.ACC_FINAL) != 0),
+                            "java.synchronized", Boolean.toString(synchronizedMethod),
                             "constructor.tail", Boolean.toString(constructorTail),
                             "constructor.originalDescriptor", constructorTail ? method.getDesc() : ""
                     )
@@ -493,6 +498,26 @@ public final class MapleNativeIrLowerer {
             }
         }
 
+        private final Map<Integer, NativeOperand> promotedParameters = new HashMap<>();
+
+        private void promoteBoundaryParameters() {
+            // JVM local slots use int computational values for boolean/byte/short/char.
+            // Keep JNI parameter widths at the boundary and widen once in the entry.
+            final NativeBlock entry = nativeBlocks.get(entryBlock);
+            for (var binding : parametersBySlot.entrySet()) {
+                final NativeParameter parameter = binding.getValue().parameter();
+                final NativeType widened = localValueType(binding.getValue().asmType());
+                if (widened.equals(parameter.type())) continue;
+                final int sort = binding.getValue().asmType().getSort();
+                final String id = "parameter.promoted." + parameter.index();
+                entry.addInstruction(new NativeInstruction.Operation(id, widened, NativeOpcode.CONVERT,
+                        List.of(new NativeOperand.Value(parameter.id(), parameter.type())),
+                        Map.of("signed", Boolean.toString(sort != Type.CHAR && sort != Type.BOOLEAN)),
+                        SourceLocation.UNKNOWN));
+                promotedParameters.put(binding.getKey(), new NativeOperand.Value(id, widened));
+            }
+        }
+
         private void predeclareBlocksAndDefinitions() {
             for (final BasicBlock block : blocks) {
                 nativeBlocks.put(block, new NativeBlock(blockId(block)));
@@ -501,7 +526,7 @@ public final class MapleNativeIrLowerer {
                     final Stmt stmt = block.get(statementIndex);
                     if (!(stmt instanceof AbstractCopyStmt copy) || copy.isSynthetic()) continue;
                     final Local local = copy.getVariable().getLocal();
-                    final NativeType type = nativeType(copy.getVariable().getType(), false);
+                    final NativeType type = localValueType(copy.getVariable().getType());
                     final Definition definition = new Definition(
                             new NativeOperand.Value(localId(local), type), copy, block
                     );
@@ -692,7 +717,8 @@ public final class MapleNativeIrLowerer {
                 throw failure(method, NativeLoweringException.Reason.TYPE_MISMATCH, branch,
                         "cannot determine comparison operand type");
             }
-            final NativeType common = TypeUtils.isObjectRef(commonAsm) ? OBJECT_TYPE : nativeType(commonAsm, false);
+            final NativeType common = TypeUtils.isObjectRef(commonAsm) ? OBJECT_TYPE : localValueType(commonAsm);
+            if (common.isReferenceLike()) requiresSemanticContext = true;
             left = requireValue(branch.getLeft(), lowerExpression(branch.getLeft(), output, location, null, common));
             right = requireValue(branch.getRight(), lowerExpression(branch.getRight(), output, location, null, common));
             final NativeOpcode opcode = comparisonOpcode(branch.getComparisonType(), common);
@@ -742,7 +768,8 @@ public final class MapleNativeIrLowerer {
                     store.getValueExpression(), output, location, null, arrayType.componentType()));
             semantic(output, new NativeInstruction.Operation(
                     temporary("array.store"), NativeType.Primitive.VOID, NativeOpcode.ARRAY_STORE,
-                    List.of(array, index, value), Map.of(), location));
+                    List.of(array, index, value),
+                    Map.of("descriptor", store.getArrayExpression().getType().getDescriptor()), location));
         }
 
         private void lowerFieldStore(
@@ -789,7 +816,8 @@ public final class MapleNativeIrLowerer {
             final NativeOperand raw;
             if (expression instanceof ConstantExpr constant) {
                 raw = lowerConstant(constant, output, location,
-                        directId(requestedId, requestedType, nativeType(constant.getType(), false)));
+                        directId(requestedId, requestedType, constant.getConstant() instanceof String
+                                ? STRING_TYPE : nativeType(constant.getType(), false)));
             } else if (expression instanceof VarExpr variable) {
                 raw = resolveVariable(variable);
             } else if (expression instanceof ArithmeticExpr arithmetic) {
@@ -919,7 +947,7 @@ public final class MapleNativeIrLowerer {
         }
 
         private NativeOperand constantOperand(final ConstantExpr constant) {
-            final NativeType type = nativeType(constant.getType(), false);
+            final NativeType type = localValueType(constant.getType());
             final Object value = constant.getConstant();
             if (value == null) {
                 if (!type.isReferenceLike()) {
@@ -1104,7 +1132,8 @@ public final class MapleNativeIrLowerer {
             final NativeType result = arrayType.componentType();
             final NativeInstruction.Operation operation = new NativeInstruction.Operation(
                     directId == null ? temporary("array.load") : directId,
-                    result, NativeOpcode.ARRAY_LOAD, List.of(array, index), Map.of(), location);
+                    result, NativeOpcode.ARRAY_LOAD, List.of(array, index),
+                    Map.of("descriptor", load.getArrayExpression().getType().getDescriptor()), location);
             semantic(output, operation);
             return new NativeOperand.Value(operation.id(), operation.type());
         }
@@ -1408,7 +1437,8 @@ public final class MapleNativeIrLowerer {
                         || versioned.getSubscript() == 0)) {
                 final ParameterBinding binding = parametersBySlot.get(variable.getLocal().getIndex());
                 if (binding != null) {
-                    return new NativeOperand.Value(binding.parameter().id(), binding.parameter().type());
+                    return promotedParameters.getOrDefault(variable.getLocal().getIndex(),
+                            new NativeOperand.Value(binding.parameter().id(), binding.parameter().type()));
                 }
             }
             throw failure(method, NativeLoweringException.Reason.NON_SSA_LOCAL, variable,
@@ -1540,6 +1570,11 @@ public final class MapleNativeIrLowerer {
             throw new IllegalArgumentException("Array load receiver does not have an array type");
         }
         return nativeArray.componentType();
+    }
+
+    private static NativeType localValueType(final Type type) {
+        return type.getSort() >= Type.BOOLEAN && type.getSort() <= Type.INT
+                ? NativeType.Primitive.I32 : nativeType(type, false);
     }
 
     private static NativeType nativeType(final Type type, final boolean boundary) {

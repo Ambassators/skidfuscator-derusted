@@ -197,6 +197,22 @@ public final class ExplicitZigNativeCompiler {
                                 + function.javaOwner() + "#" + function.javaName()
                                 + function.javaDescriptor());
             }
+            // This developer bridge has a string runtime, not the production semantic
+            // dispatcher. Reject unsupported bodies before launching a compiler.
+            if (function.blocks().size() != 1) {
+                throw new NativeCompilationException("Explicit Zig compiler requires a single literal-return block");
+            }
+            final NativeBlock block = function.blocks().get(0);
+            if (!block.exceptionEdges().isEmpty() || block.instructions().size() != 1
+                    || !(block.instructions().get(0) instanceof NativeInstruction.Operation literal)
+                    || literal.opcode() != NativeOpcode.STRING_CONSTANT
+                    || !(block.terminator().orElse(null) instanceof dev.skidfuscator.nativeir.NativeTerminator.Return returning)
+                    || !(returning.value().orElse(null) instanceof dev.skidfuscator.nativeir.NativeOperand.Value value)
+                    || !value.id().equals(literal.id())) {
+                throw new NativeCompilationException(
+                        "Explicit Zig compiler supports only a literal String return without exception handlers");
+            }
+            requireAscii(block.id(), "Native block id");
             requireAscii(function.javaOwner(), "Java owner");
             requireAscii(function.javaName(), "Java method name");
             requireAscii(function.javaDescriptor(), "Java method descriptor");
@@ -216,6 +232,14 @@ public final class ExplicitZigNativeCompiler {
 
         for (int index = 0; index < functions.size(); index++) {
             final NativeFunction function = functions.get(index);
+            final String exceptionSite = "skid.semantic.site.v1." + function.symbol() + "."
+                    + function.blocks().get(0).id() + ".exception-dispatch";
+            c.append("int32_t skid_exception_site_").append(index)
+                    .append("(void *context) __asm__(\"").append(cString(exceptionSite)).append("\");\n")
+                    .append("int32_t skid_exception_site_").append(index).append("(void *context) {\n")
+                    .append("    JNIEnv *env = (JNIEnv *) context;\n")
+                    .append("    return env != 0 && !(*env)->ExceptionCheck(env) ? -1 : -2;\n")
+                    .append("}\n\n");
             c.append("extern void *").append(function.symbol()).append("(void *semantic_context);\n")
                     .append("static jstring JNICALL skid_trampoline_").append(index)
                     .append("(JNIEnv *env, jclass owner) {\n")

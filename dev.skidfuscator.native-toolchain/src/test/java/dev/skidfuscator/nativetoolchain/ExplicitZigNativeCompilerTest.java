@@ -98,6 +98,28 @@ class ExplicitZigNativeCompilerTest {
         assertZeroAllocatedBytesAfterWarmup();
     }
 
+    @Test
+    void rejectsUnsupportedBodiesBeforeLaunchingTheDevelopmentCompiler() throws Exception {
+        final var stringType = new NativeType.Reference("java/lang/String", false);
+        final var block = new NativeBlock("entry")
+                .addInstruction(new NativeInstruction.Operation("first", stringType,
+                        NativeOpcode.STRING_CONSTANT, List.of(), Map.of("value", "one"), SourceLocation.UNKNOWN))
+                .addInstruction(new NativeInstruction.Operation("second", stringType,
+                        NativeOpcode.STRING_CONSTANT, List.of(), Map.of("value", "two"), SourceLocation.UNKNOWN))
+                .terminate(new NativeTerminator.Return(new NativeOperand.Value("second", stringType)));
+        final var function = new NativeFunction("unsupported", "sample/Strings", "value",
+                "()Ljava/lang/String;", stringType, List.of(), "entry", NativeBackend.AOT,
+                false, true, Map.of("java.static", "true", "semanticContext", "jni")).addBlock(block);
+        final Path neverExecuted = Files.createFile(temporary.resolve("not-a-compiler.exe"));
+        final Path output = temporary.resolve("no-output");
+        final var failure = org.junit.jupiter.api.Assertions.assertThrows(NativeCompilationException.class,
+                () -> new ExplicitZigNativeCompiler(new CanonicalLlvmIrEmitter()).compile(
+                        new NativeModule("unsupported").addFunction(function), neverExecuted,
+                        output, Set.of(NativeTarget.WINDOWS_X86_64), "unsupported-test"));
+        assertTrue(failure.getMessage().contains("only a literal String return"));
+        assertFalse(Files.exists(output), "Unsupported input must fail before any compiler output is staged");
+    }
+
     private static void assertZeroAllocatedBytesAfterWarmup() {
         final java.lang.management.ThreadMXBean baseBean =
                 java.lang.management.ManagementFactory.getThreadMXBean();
