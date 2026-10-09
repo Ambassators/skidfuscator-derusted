@@ -128,6 +128,7 @@ public class MethodMergeTransformer extends AbstractTransformer {
 
         for (Host host : hosts) {
             buildHostMethod(host);
+            for (MergeCandidate member : host.members) skidfuscator.getDebugMappings().derived(member.raw, host.node);
             host.ownerRaw.methods.add(host.node);
         }
 
@@ -441,6 +442,7 @@ public class MethodMergeTransformer extends AbstractTransformer {
             } else if (cloned instanceof IincInsnNode) {
                 ((IincInsnNode) cloned).var += bodyBase;
             }
+            skidfuscator.getDebugMappings().copied(insn, cloned);
             out.add(cloned);
         }
 

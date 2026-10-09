@@ -123,6 +123,7 @@ public class OutlinerTransformer extends AbstractTransformer {
 
                 candidate.helperName = uniqueMethodName(classNode, OUTLINE_PREFIX, OUTLINE_DESC);
                 candidate.helper = buildHelper(candidate);
+                skidfuscator.getDebugMappings().derived(method, candidate.helper);
                 rewriteOriginal(classNode, method, candidate);
                 helpers.add(candidate.helper);
                 outlined++;
@@ -598,6 +599,7 @@ public class OutlinerTransformer extends AbstractTransformer {
             if (!(insn instanceof FrameNode) && !(insn instanceof LineNumberNode) && insn.getOpcode() >= 0) {
                 final AbstractInsnNode cloned = insn.clone(labels);
                 remapLocal(cloned, candidate.localMap);
+                skidfuscator.getDebugMappings().copied(insn, cloned);
                 out.add(cloned);
             }
             if (insn == candidate.endInsn) {

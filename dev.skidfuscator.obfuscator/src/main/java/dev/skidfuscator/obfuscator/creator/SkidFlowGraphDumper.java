@@ -277,7 +277,9 @@ public class SkidFlowGraphDumper implements BytecodeFrontend {
 				if (stmt instanceof FrameStmt && TEST_COMPUTE)
 					continue;
 
+                AbstractInsnNode previous = m.node.instructions.getLast();
 				stmt.toCode(m.node, this);
+                skidfuscator.getDebugMappings().emitted((dev.skidfuscator.obfuscator.skidasm.SkidMethodNode) m, b, stmt, previous);
 			}
 
 			last = b;

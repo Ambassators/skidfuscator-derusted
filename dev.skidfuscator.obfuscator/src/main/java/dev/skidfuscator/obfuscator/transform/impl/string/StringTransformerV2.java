@@ -122,6 +122,7 @@ public class StringTransformerV2 extends AbstractTransformer {
 
                     try {
                         parent.overwrite(unit, encrypted);
+                        skidfuscator.getDebugMappings().string(methodNode, block, constant, encrypted, finalGenerator.getClass().getName());
                     } catch (IllegalStateException e) {
                         return;
                     }

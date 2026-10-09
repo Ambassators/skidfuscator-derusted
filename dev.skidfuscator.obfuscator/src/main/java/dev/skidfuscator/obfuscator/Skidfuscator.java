@@ -147,6 +147,7 @@ public class Skidfuscator {
     private final SkidRemapper classRemapper = new SkidRemapper(new HashMap<>());
     private final DependencyDownloader dependencyDownloader = new DependencyDownloader();
 
+    private dev.skidfuscator.obfuscator.mapping.DebugMappings debugMappings;
     private dev.skidfuscator.obfuscator.compatibility.RuntimeContractRegistry runtimeContracts;
 
     /** ABI constraints are deliberately not body exemptions. */
@@ -322,6 +323,7 @@ public class Skidfuscator {
         // Capture original member and metadata identities before hierarchy/seed
         // threading or any late descriptor-changing transformation can alter them.
         this.runtimeContracts = dev.skidfuscator.obfuscator.compatibility.RuntimeContractRegistry.capture(this);
+        this.debugMappings = dev.skidfuscator.obfuscator.mapping.DebugMappings.capture(this);
         final dev.skidfuscator.obfuscator.compatibility.BootstrapRuntimeContracts bootstrapContracts =
                 dev.skidfuscator.obfuscator.compatibility.BootstrapRuntimeContracts.capture(this);
 
@@ -373,6 +375,7 @@ public class Skidfuscator {
 
         LOGGER.post("Executing transformers...");
         System.out.println("┌───────────────────────────[ Transform ]───────────────────────────┐\n");
+        debugMappings.captureFlow(this);
         init();
         preTransform();
         transform();
@@ -561,6 +564,7 @@ public class Skidfuscator {
         _cleanup();
 
         _dump();
+        debugMappings.write(this);
         nativePipeline.publishPlatformArtifacts();
 
         SkidProgressBar.RENDER_THREAD.shutdown();
