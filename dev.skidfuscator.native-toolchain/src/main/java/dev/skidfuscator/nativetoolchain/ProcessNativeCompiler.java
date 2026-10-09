@@ -145,8 +145,10 @@ public final class ProcessNativeCompiler implements NativeCompiler {
                 .map(dev.skidfuscator.nativeir.NativeInstruction.Operation.class::cast)
                 .anyMatch(op->op.attributes().containsKey("native.field.storage"));
         final boolean cppProtobuf = request.module().functions().stream()
-                .anyMatch(f -> f.metadata().containsKey("cpp.protobuf.kernel") || f.metadata().containsKey("cpp.windows.scanner"));
+                .anyMatch(f -> f.metadata().containsKey("cpp.protobuf.kernel") || f.metadata().containsKey("cpp.windows.scanner")
+                        || f.metadata().containsKey("cpp.client.detection"));
         final boolean cppScanner = request.module().functions().stream().anyMatch(f->f.metadata().containsKey("cpp.windows.scanner"));
+        final boolean cppDetection = request.module().functions().stream().anyMatch(f->f.metadata().containsKey("cpp.client.detection"));
         if (cppProtobuf && !request.module().metadata().containsKey("cpp.protobuf.bundle"))
             throw new NativeCompilationException("C++ protobuf region has no compilation bundle");
         if ("class-local-v1".equals(request.module().metadata().get("registration")) || selectiveEntries || nativeFields || cppProtobuf) {
@@ -171,6 +173,8 @@ public final class ProcessNativeCompiler implements NativeCompiler {
                 throw new NativeCompilationException("SkidLLVM lacks required cpp-protobuf-batch-v1 capability");
             if(cppScanner && !contract.output().contains("\"cpp-current-jvm-scanner-v1\""))
                 throw new NativeCompilationException("SkidLLVM lacks required cpp-current-jvm-scanner-v1 capability");
+            if(cppDetection && !contract.output().contains("\"cpp-client-detection-v1\""))
+                throw new NativeCompilationException("SkidLLVM lacks required cpp-client-detection-v1 capability");
         }
 
         final byte[] llvmIr = Objects.requireNonNull(emitter.emit(request.module()), "emitter result");

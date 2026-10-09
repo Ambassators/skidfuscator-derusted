@@ -245,6 +245,26 @@ public final class NativePipeline {
             lowered.replaceAll(value -> scanner.contains(value) ? new Lowered(value.candidate(),
                     CppWindowsScannerRegion.replace(value.function()),value.mutation()) : value);
         }
+        final boolean cppDetectionUsed = skidfuscator.getConfig().getBoolean("native.cppClientDetection.enabled", false);
+        if (cppDetectionUsed) {
+            if (cppScannerUsed || cppBundle.isBlank() || !Files.isRegularFile(Path.of(cppBundle)))
+                throw new NativeBackendUnavailableException("C++ client detection requires its own complete bundle and replaces the Java scanner region");
+            final java.util.Map<Lowered, String> operations = new java.util.HashMap<>();
+            String owner = null;
+            for (String kind : List.of("install", "capture", "shutdown")) {
+                String key = skidfuscator.getConfig().getString("native.cppClientDetection." + kind + "Method", "");
+                Lowered target = lowered.stream().filter(value -> key.equals(value.function().javaOwner() + "#"
+                        + value.function().javaName() + value.function().javaDescriptor())).findFirst()
+                        .orElseThrow(() -> new NativeBackendUnavailableException("C++ detector " + kind + " method did not successfully lower"));
+                if (owner != null && !owner.equals(target.function().javaOwner()))
+                    throw new NativeBackendUnavailableException("C++ detector facade operations have different owners");
+                owner = target.function().javaOwner();
+                if (operations.put(target, kind) != null)
+                    throw new NativeBackendUnavailableException("C++ detector operations alias the same method");
+            }
+            lowered.replaceAll(value -> operations.containsKey(value) ? new Lowered(value.candidate(),
+                    CppClientDetectionRegion.replace(value.function(), operations.get(value)), value.mutation()) : value);
+        }
         final NativeEntryPolicy.Result entries = NativeEntryPolicy.plan(config,
                 lowered.stream().map(value -> new NativeEntryPolicy.Body(value.candidate().selection().getMethod(),
                         value.function(), value.mutation())).toList(), outputMethods(), linkageBridges.generatedHelpers(),
@@ -260,6 +280,9 @@ public final class NativePipeline {
         if (cppScannerUsed && lowered.stream().filter(value -> CppWindowsScannerRegion.OWNER.equals(value.function().javaOwner()))
                 .anyMatch(value -> !"removed".equals(value.function().metadata().get("java.entry"))))
             throw new NativeBackendUnavailableException("C++ scanner facade still has a Java entry/contract; cannot elide its owner");
+        if (cppDetectionUsed && lowered.stream().filter(value -> value.function().metadata().containsKey("cpp.client.detection"))
+                .anyMatch(value -> !"removed".equals(value.function().metadata().get("java.entry"))))
+            throw new NativeBackendUnavailableException("C++ client detector facade still has a Java entry/contract; cannot elide its owner");
         final NativeFieldPolicy.Result fields = NativeFieldPolicy.plan(config,
                 lowered.stream().map(value -> new NativeEntryPolicy.Body(value.candidate().selection().getMethod(),
                         value.function(),value.mutation())).toList(),
@@ -293,7 +316,7 @@ public final class NativePipeline {
             final java.util.Map<String,String> moduleMetadata = new java.util.HashMap<>();
             moduleMetadata.put("loader", loaderName);
             moduleMetadata.put("registration", "class-local-v1");
-            if (cppBatchUsed || cppScannerUsed) moduleMetadata.put("cpp.protobuf.bundle", Path.of(cppBundle).toAbsolutePath().toString());
+            if (cppBatchUsed || cppScannerUsed || cppDetectionUsed) moduleMetadata.put("cpp.protobuf.bundle", Path.of(cppBundle).toAbsolutePath().toString());
             final NativeModule module = new NativeModule(moduleName, 1, moduleMetadata);
             lowered.forEach(value -> module.addFunction(value.function()));
             final Set<dev.skidfuscator.nativetoolchain.NativeTarget> targets = toolchainTargets(request.targets());
