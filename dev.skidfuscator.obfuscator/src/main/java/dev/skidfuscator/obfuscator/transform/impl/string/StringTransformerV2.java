@@ -14,16 +14,22 @@ import dev.skidfuscator.obfuscator.transform.Transformer;
 import dev.skidfuscator.obfuscator.transform.impl.string.generator.EncryptionGeneratorV3;
 import dev.skidfuscator.obfuscator.transform.impl.string.generator.v3.Base64PaddedV3EncryptionGenerator;
 import dev.skidfuscator.obfuscator.util.RandomUtil;
+import dev.skidfuscator.obfuscator.util.TypeUtil;
 import org.mapleir.asm.ClassNode;
 import org.mapleir.asm.FieldNode;
 import org.mapleir.ir.cfg.ControlFlowGraph;
 import org.mapleir.ir.code.CodeUnit;
 import org.mapleir.ir.code.Expr;
+import org.mapleir.ir.code.expr.ConstantExpr;
+import org.mapleir.ir.code.expr.invoke.StaticInvocationExpr;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class StringTransformerV2 extends AbstractTransformer {
+    private final List<String> noticeLiterals;
+    private final AtomicInteger noticeSite = new AtomicInteger();
     private final Map<SkidClassNode, EncryptionGeneratorV3> keyMap = new HashMap<>();
 
     private final Set<String> INJECTED = new HashSet<>();
@@ -34,6 +40,15 @@ public class StringTransformerV2 extends AbstractTransformer {
 
     public StringTransformerV2(Skidfuscator skidfuscator, List<Transformer> children) {
         super(skidfuscator, "String Encryption", children);
+        if (skidfuscator.getConfig().getBoolean("stringEncryption.noticeXor.enabled", false)) {
+            final String keyFile = skidfuscator.getConfig().getString("stringEncryption.noticeXor.keyFile", "");
+            if (keyFile.trim().isEmpty()) {
+                throw new IllegalArgumentException("stringEncryption.noticeXor.keyFile is required");
+            }
+            noticeLiterals = NoticeXorPad.read(java.nio.file.Paths.get(keyFile));
+        } else {
+            noticeLiterals = Collections.emptyList();
+        }
     }
 
     @Listen
@@ -91,7 +106,19 @@ public class StringTransformerV2 extends AbstractTransformer {
                     final String constant = (String) unit.getConstant();
                     final SkidBlock block = (SkidBlock) unit.getBlock();
 
-                    final Expr encrypted = finalGenerator.encrypt(constant, methodNode, block);
+                    final Expr encrypted;
+                    if (noticeLiterals.isEmpty()) {
+                        encrypted = finalGenerator.encrypt(constant, methodNode, block);
+                    } else {
+                        final String notice = noticeLiterals.get(
+                                Math.floorMod(noticeSite.getAndIncrement(), noticeLiterals.size()));
+                        final Expr protectedValue = finalGenerator.encrypt(
+                                NoticeXorPad.stage(constant, notice), methodNode, block);
+                        encrypted = new StaticInvocationExpr(
+                                new Expr[]{protectedValue, new ConstantExpr(notice, TypeUtil.STRING_TYPE)},
+                                "sdk/NoticeStrings", "finish",
+                                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+                    }
 
                     try {
                         parent.overwrite(unit, encrypted);
